@@ -79,6 +79,19 @@ JSON wrapper). Watch your provider's usage dashboard for the first ~50
 calls to confirm your actual per-example cost before letting `--all` run
 unattended.
 
+## 2b. Identity examples
+
+```bash
+python generate_identity.py
+```
+
+Zero-cost, no API calls. Generates a small set of self-description
+examples (name, company, founder, how it was trained) so the model
+reliably identifies as Imagination 2 Pro instead of drifting. Deterministic
+question x canonical-answer pairs rather than LLM-generated, since identity
+facts need to be learned consistently, not varied for diversity like task
+examples are. Writes `data/raw/identity__<level>.jsonl`.
+
 ## 3. Dedup + split
 
 ```bash
