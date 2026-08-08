@@ -135,7 +135,7 @@ def mode_for_domain(domain: str) -> str:
     subagent_orchestration examples are generated in ORCHESTRATOR mode.
     The SUBAGENT mode data mostly comes for free from agentic_tool_use and
     general_code examples reused with a subagent-mode system prompt (see
-    generate.py --also-emit-subagent-variant), rather than a fourth domain.
+    SUBAGENT_VARIANT_RATE in generate.py), rather than a fourth domain.
     """
     return {
         "agentic_tool_use": "direct",

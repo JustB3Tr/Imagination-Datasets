@@ -97,9 +97,9 @@ and specific with real details): "{seed_task}"
 The system prompt for this example must be exactly:
 \"\"\"{system_prompt}\"\"\"
 
-{f'Available tool schema you may use in tool_calls (in addition to inventing '
-  f'1-2 realistic domain tools like fetch/shell/file_search/sql_query as needed): '
-  f'{json.dumps(RUN_SUBAGENT_TOOL_SCHEMA)}' if mode == 'orchestrator' else
+{f'The ONLY tool you may call is run_subagent, schema: '
+  f'{json.dumps(RUN_SUBAGENT_TOOL_SCHEMA)}. Do not invent or call any other tools.'
+  if mode == 'orchestrator' else
   'Invent 1-2 realistic tools appropriate to the task (e.g. fetch, shell, '
   'file_search, sql_query) with sensible JSON parameter schemas.'}
 

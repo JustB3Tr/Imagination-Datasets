@@ -38,9 +38,10 @@ worst-case ceiling around $4-5 at current DeepSeek pricing. Push variants
 higher if you want more, the dry-run tells you the ceiling before you spend
 a cent.
 
-**Then set a hard spend cap for the real run.** The script checks actual
-spend (from the API's real usage stats, not the estimate) before every
-single call and stops queuing new ones once the cap is hit. It prints a
+**Then set a hard spend cap for the real run.** All calls for a combo are
+queued up front, but the script checks actual spend (from the API's real
+usage stats, not the estimate) before each one fires and skips making the
+API request once the cap is hit. It prints a
 running total to stderr as it goes, so you can watch it live in your
 terminal instead of tabbing over to a billing dashboard:
 

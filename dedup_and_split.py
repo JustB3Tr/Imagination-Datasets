@@ -55,13 +55,13 @@ def example_text(ex: dict) -> str:
 
 def greedy_dedup(examples: list[dict], embeddings: np.ndarray, threshold: float):
     """Keep an example only if it's not too similar to one already kept,
-    within the same (domain, level) bucket."""
+    within the same (domain, level, mode) bucket."""
     kept_idx = []
     kept_embeds_by_bucket = defaultdict(list)  # bucket -> list[(idx, vec)]
 
     for i, ex in enumerate(examples):
         meta = ex.get("meta", {})
-        bucket = (meta.get("domain"), meta.get("level"))
+        bucket = (meta.get("domain"), meta.get("level"), meta.get("mode"))
         vec = embeddings[i]
         is_dup = False
         for _, other_vec in kept_embeds_by_bucket[bucket]:
