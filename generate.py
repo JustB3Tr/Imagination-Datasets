@@ -108,12 +108,27 @@ The system prompt for this example must be exactly:
     return system_prompt, generator_instructions
 
 
-def estimate_call_tokens(level: str, user_prompt: str) -> tuple[int, int]:
+# Extra output-token headroom beyond MAX_TOKENS_BY_LEVEL's content budget, to
+# cover the JSON wrapper (roles, tool_call ids, escaped nested JSON in tool
+# args/results). ORCHESTRATOR mode conversations run several run_subagent
+# round-trips and measurably truncate later than direct/subagent mode at the
+# same reasoning level (~6.5k vs ~5k chars into the completion in testing),
+# so it gets a bigger allowance.
+WRAPPER_TOKEN_BUFFER = 800
+ORCHESTRATOR_EXTRA_TOKENS = 1200
+
+
+def max_output_tokens(level: str, mode: str) -> int:
+    extra = WRAPPER_TOKEN_BUFFER + (ORCHESTRATOR_EXTRA_TOKENS if mode == "orchestrator" else 0)
+    return MAX_TOKENS_BY_LEVEL[level] + extra
+
+
+def estimate_call_tokens(level: str, mode: str, user_prompt: str) -> tuple[int, int]:
     """Rough input/output token estimate, used by --dry-run and as a fallback
     if a provider doesn't return usage stats. ~4 chars/token is a coarse but
     fine approximation for this purpose."""
     input_tokens = len(user_prompt) // 4 + 30  # +30 for the short system msg
-    output_tokens = MAX_TOKENS_BY_LEVEL[level]  # worst case; dry-run is a ceiling, not an average
+    output_tokens = max_output_tokens(level, mode)  # worst case; dry-run is a ceiling, not an average
     return input_tokens, output_tokens
 
 
@@ -157,7 +172,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
     system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode)
 
     if dry_run:
-        in_tok, out_tok = estimate_call_tokens(level, user_prompt)
+        in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
         total = _add_spend(in_tok, out_tok)
         return {"_dry_run": True, "est_total_usd": total}
 
@@ -172,16 +187,13 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.9,
-            max_tokens=MAX_TOKENS_BY_LEVEL[level] + 800,  # + room for the wrapper JSON
-            # (roles/tool_call ids/escaped nested JSON in tool args and tool
-            # results eat more of the budget than raw content length suggests;
-            # 400 was cutting ~40% of calls off mid-string, see PR discussion)
+            max_tokens=max_output_tokens(level, mode),
         )
         usage = getattr(resp, "usage", None)
         if usage:
             total = _add_spend(usage.prompt_tokens, usage.completion_tokens)
         else:
-            in_tok, out_tok = estimate_call_tokens(level, user_prompt)
+            in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
             total = _add_spend(in_tok, out_tok)
         print(f"  [${total:6.3f} total] {domain}/{level}/{mode}", file=sys.stderr)
 
