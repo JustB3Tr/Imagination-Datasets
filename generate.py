@@ -127,7 +127,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
         return {"_dry_run": True, "est_total_usd": total}
 
     if _over_cap(max_spend):
-        return None  # cap already hit, don't make the call
+        return "CAPPED"  # cap already hit, don't make the call
 
     try:
         resp = client.chat.completions.create(
@@ -137,7 +137,10 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.9,
-            max_tokens=MAX_TOKENS_BY_LEVEL[level] + 400,  # + room for the wrapper JSON
+            max_tokens=MAX_TOKENS_BY_LEVEL[level] + 800,  # + room for the wrapper JSON
+            # (roles/tool_call ids/escaped nested JSON in tool args and tool
+            # results eat more of the budget than raw content length suggests;
+            # 400 was cutting ~40% of calls off mid-string, see PR discussion)
         )
         usage = getattr(resp, "usage", None)
         if usage:
@@ -181,6 +184,7 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
     print(f"[{domain}/{level}] {len(jobs)} calls queued -> {out_path}")
     written = 0
     skipped_cap = 0
+    skipped_error = 0
     f = None if dry_run else open(out_path, "a")
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -190,8 +194,10 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
             }
             for fut in as_completed(futures):
                 example = fut.result()
-                if example is None:
+                if example == "CAPPED":
                     skipped_cap += 1
+                elif example is None:
+                    skipped_error += 1
                 elif dry_run:
                     written += 1
                 else:
@@ -205,8 +211,13 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
         print(f"[{domain}/{level}] would generate {written} examples")
     else:
         msg = f"[{domain}/{level}] wrote {written}/{len(jobs)} examples"
+        details = []
         if skipped_cap:
-            msg += f"  ({skipped_cap} skipped, spend cap reached)"
+            details.append(f"{skipped_cap} skipped, spend cap reached")
+        if skipped_error:
+            details.append(f"{skipped_error} skipped, parse/API error")
+        if details:
+            msg += "  (" + "; ".join(details) + ")"
         print(msg)
     return written
 
