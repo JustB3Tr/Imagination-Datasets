@@ -117,6 +117,41 @@ def estimate_call_tokens(level: str, user_prompt: str) -> tuple[int, int]:
     return input_tokens, output_tokens
 
 
+def validate_example(example: dict, level: str) -> str | None:
+    """Return an error string if the example is structurally incomplete or
+    malformed, else None. Catches truncated generations that still parse as
+    valid JSON (the model got cut off mid-conversation, e.g. right after a
+    tool call, with no final answer) -- these silently pass json.loads and
+    would otherwise poison the training set undetected."""
+    messages = example.get("messages")
+    if not messages:
+        return "no messages"
+
+    last = messages[-1]
+    if last.get("role") != "assistant":
+        return f"last message role is '{last.get('role')}', not assistant (truncated conversation)"
+    if last.get("tool_calls"):
+        return "last assistant message still calls a tool (truncated conversation)"
+    content = last.get("content")
+    if not content or not isinstance(content, str) or len(content.strip()) < 5:
+        return "last assistant message has empty/near-empty content"
+
+    if level == "low" and "<think>" in content:
+        return "level is low but final answer contains a <think> block"
+    if level in ("medium", "high") and not content.lstrip().startswith("<think>"):
+        return f"level is {level} but final answer doesn't start with a <think> block"
+
+    # every tool_call must be immediately followed by its matching tool result
+    for i, m in enumerate(messages):
+        for call in m.get("tool_calls") or []:
+            call_id = call.get("id")
+            nxt = messages[i + 1] if i + 1 < len(messages) else None
+            if not nxt or nxt.get("role") != "tool" or nxt.get("tool_call_id") != call_id:
+                return f"tool_call {call_id!r} has no matching tool result message"
+
+    return None
+
+
 def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
              max_spend: float, dry_run: bool) -> dict | None:
     system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode)
@@ -156,6 +191,12 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             if raw.startswith("json"):
                 raw = raw[4:]
         example = json.loads(raw)
+
+        invalid_reason = validate_example(example, level)
+        if invalid_reason:
+            print(f"  [skip] {domain}/{level}/{mode}: {invalid_reason}", file=sys.stderr)
+            return None
+
         example["meta"] = {
             "domain": domain,
             "level": level,
