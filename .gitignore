@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/raw/
+data/train.jsonl
+data/eval.jsonl
+data/dedup_report.json
+.env
