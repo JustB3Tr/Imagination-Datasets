@@ -141,6 +141,12 @@ def validate_example(example: dict, level: str) -> str | None:
     messages = example.get("messages")
     if not messages:
         return "no messages"
+    if len(messages) < 3:
+        return f"only {len(messages)} message(s), missing system/user/answer structure"
+    if messages[0].get("role") != "system":
+        return f"first message role is '{messages[0].get('role')}', not system"
+    if messages[1].get("role") != "user":
+        return f"second message role is '{messages[1].get('role')}', not user"
 
     last = messages[-1]
     if last.get("role") != "assistant":
