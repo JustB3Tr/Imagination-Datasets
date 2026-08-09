@@ -1,0 +1,12 @@
+# The Unsloth Studio Vast.ai template already ships these. This file is
+# only a fallback in case you're on a different container / something's
+# missing. Don't force-reinstall torch -- it's tied to the container's CUDA
+# build and reinstalling it is the most common way to break everything.
+unsloth
+unsloth_zoo
+trl>=0.12.0
+transformers>=4.46.0
+datasets
+accelerate
+bitsandbytes
+peft
