@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """
-QLoRA finetune Qwen3-Coder-30B-A3B-Instruct on the Imagination 2 Pro dataset.
+LoRA (full bf16 base, not quantized) finetune of Qwen3-Coder-30B-A3B-Instruct
+on the Imagination 2 Pro dataset.
 
 Designed to "just run": upload this file plus train.jsonl / eval.jsonl
 (from dedup_and_split.py) into the same directory on your Vast.ai instance
-(Unsloth Studio template, RTX A6000 48GB recommended) and run:
+(Unsloth Studio template, A100 80GB recommended -- the bf16 base weights
+alone are ~60GB, won't fit on a 24-48GB card) and run:
 
-    python train_qlora.py
+    python train.py
 
 It will:
   1. auto-find train.jsonl / eval.jsonl (checks ./ and ./data/)
   2. download Qwen3-Coder-30B-A3B-Instruct from Hugging Face (first run only,
      cached after that)
-  3. apply QLoRA (4-bit, LoRA on attention + expert FFN layers, router frozen
-     -- see comment below on why)
+  3. apply LoRA on the full-precision base (attention + expert FFN layers,
+     router frozen -- see comment below on why). Pass --load_in_4bit to
+     fall back to QLoRA if you ever need to run on a smaller/cheaper GPU --
+     the quality gap is normally small, this just gets you the extra bit
+     when the budget/hardware allows it.
   4. render each example with the model's own chat template (so tool-calling
      formatting matches what the base model already learned in pretraining)
   5. mask loss to assistant turns only (critical -- without this the model
@@ -23,8 +28,8 @@ It will:
      interrupted and you re-launch the script -- spot instances can die)
   7. save the LoRA adapter when done
 
-Do a smoke test first:  python train_qlora.py --max_steps 20
-Then the real run:      python train_qlora.py
+Do a smoke test first:  python train.py --max_steps 20
+Then the real run:      python train.py
 """
 import argparse
 import glob
@@ -76,7 +81,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_name", default="Qwen/Qwen3-Coder-30B-A3B-Instruct")
     ap.add_argument("--max_seq_length", type=int, default=4096)
-    ap.add_argument("--output_dir", default="./qlora_out")
+    ap.add_argument("--output_dir", default="./lora_out")
+    ap.add_argument("--load_in_4bit", action="store_true",
+                     help="Fall back to QLoRA (4-bit base) instead of full "
+                          "bf16 LoRA -- use this if you're on a 24-48GB card "
+                          "instead of an 80GB one. Quality difference vs full "
+                          "LoRA is normally small.")
     ap.add_argument("--epochs", type=float, default=3.0)
     ap.add_argument("--learning_rate", type=float, default=2e-4)
     ap.add_argument("--per_device_batch_size", type=int, default=1)
@@ -90,16 +100,17 @@ def main():
                           "before committing to the full run.")
     args = ap.parse_args()
 
-    # ---- 1. Load base model in 4-bit (downloads from HF on first run) ----
-    print(f"Loading {args.model_name} in 4-bit ...")
+    # ---- 1. Load base model (downloads from HF on first run) ----
+    precision = "4-bit (QLoRA)" if args.load_in_4bit else "bf16 (full LoRA)"
+    print(f"Loading {args.model_name} in {precision} ...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model_name,
         max_seq_length=args.max_seq_length,
-        load_in_4bit=True,
+        load_in_4bit=args.load_in_4bit,
         dtype=None,  # auto-detect bf16
     )
 
-    # ---- 2. Apply QLoRA ----
+    # ---- 2. Apply LoRA ----
     # target_modules covers attention + each expert's own FFN weights.
     # Deliberately NOT touching the MoE router (the network that decides
     # which experts fire per token) -- training the router alongside the
