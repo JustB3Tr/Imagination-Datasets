@@ -27,6 +27,7 @@ import random
 import re
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from pathlib import Path
@@ -125,30 +126,42 @@ def judge_one(client: OpenAI, ex: dict, max_calls) -> dict | None:
         return "CAPPED"
 
     formatted = format_example_for_judge(ex)
-    try:
-        extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You output only valid JSON, nothing else."},
-                {"role": "user", "content": JUDGE_INSTRUCTIONS + "\n\n---\n\n" + formatted},
-            ],
-            temperature=0.3,
-            max_tokens=600,
-            extra_body=extra_body,
-        )
-        raw = resp.choices[0].message.content.strip()
-        raw = re.sub(r"^<thought>.*?</thought>\s*", "", raw, count=1, flags=re.DOTALL)
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        verdict = json.loads(raw)
-        verdict["_meta"] = ex["meta"]
-        return verdict
-    except Exception as e:
-        print(f"  [skip] {ex['meta']['domain']}/{ex['meta']['level']}/{ex['meta']['mode']}: {e}", file=sys.stderr)
-        return None
+    extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}
+
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You output only valid JSON, nothing else."},
+                    {"role": "user", "content": JUDGE_INSTRUCTIONS + "\n\n---\n\n" + formatted},
+                ],
+                temperature=0.3,
+                max_tokens=600,
+                extra_body=extra_body,
+            )
+            raw = resp.choices[0].message.content.strip()
+            raw = re.sub(r"^<thought>.*?</thought>\s*", "", raw, count=1, flags=re.DOTALL)
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            verdict = json.loads(raw)
+            verdict["_meta"] = ex["meta"]
+            return verdict
+        except Exception as e:
+            is_rate_limit = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+            if is_rate_limit and attempt < max_retries:
+                # Free-tier per-minute quotas recover fast; back off and retry
+                # instead of permanently skipping a good example.
+                delay = 20 * (attempt + 1)
+                print(f"  [rate limited, retry {attempt+1}/{max_retries} in {delay}s] "
+                      f"{ex['meta']['domain']}/{ex['meta']['level']}/{ex['meta']['mode']}", file=sys.stderr)
+                time.sleep(delay)
+                continue
+            print(f"  [skip] {ex['meta']['domain']}/{ex['meta']['level']}/{ex['meta']['mode']}: {e}", file=sys.stderr)
+            return None
 
 
 def main():
