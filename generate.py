@@ -72,6 +72,28 @@ def _over_cap(max_spend: float) -> bool:
     with _spend_lock:
         return _spend_state["usd"] >= max_spend
 
+
+# Separate from the dollar-based spend cap: some providers (e.g. OpenRouter's
+# free-tier models) charge $0 but enforce a hard request-count quota instead
+# (their docs note failed attempts count against the quota too, so this
+# increments on every attempted call, not just successful ones).
+_call_lock = threading.Lock()
+_call_state = {"count": 0}
+
+
+def _add_call() -> int:
+    with _call_lock:
+        _call_state["count"] += 1
+        return _call_state["count"]
+
+
+def _over_call_cap(max_calls: int | None) -> bool:
+    if max_calls is None:
+        return False
+    with _call_lock:
+        return _call_state["count"] >= max_calls
+
+
 # Fraction of agentic_tool_use / general_code examples that also get a
 # SUBAGENT-mode variant emitted (same task, different system prompt/framing,
 # no larger conversation context). This is how "being a subagent" gets
@@ -174,7 +196,7 @@ def validate_example(example: dict, level: str) -> str | None:
 
 
 def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
-             max_spend: float, dry_run: bool) -> dict | None:
+             max_spend: float, max_calls: int | None, dry_run: bool) -> dict | None:
     system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode)
 
     if dry_run:
@@ -182,10 +204,13 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
         total = _add_spend(in_tok, out_tok)
         return {"_dry_run": True, "est_total_usd": total}
 
-    if _over_cap(max_spend):
+    if _over_cap(max_spend) or _over_call_cap(max_calls):
         return "CAPPED"  # cap already hit, don't make the call
 
     try:
+        call_num = _add_call()
+        if max_calls is not None:
+            print(f"  [call {call_num}/{max_calls}] {domain}/{level}/{mode}", file=sys.stderr)
         resp = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -228,7 +253,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
 
 
 def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: int,
-              max_spend: float, dry_run: bool):
+              max_spend: float, max_calls: int | None, dry_run: bool):
     seeds = load_seeds(domain)
     mode = mode_for_domain(domain)
     out_path = OUT_DIR / f"{domain}__{level}.jsonl"
@@ -248,7 +273,7 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(call_api, client, d, lv, s, m, max_spend, dry_run): (d, lv, s, m)
+                pool.submit(call_api, client, d, lv, s, m, max_spend, max_calls, dry_run): (d, lv, s, m)
                 for (d, lv, s, m) in jobs
             }
             for fut in as_completed(futures):
@@ -272,7 +297,7 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
         msg = f"[{domain}/{level}] wrote {written}/{len(jobs)} examples"
         details = []
         if skipped_cap:
-            details.append(f"{skipped_cap} skipped, spend cap reached")
+            details.append(f"{skipped_cap} skipped, spend/call cap reached")
         if skipped_error:
             details.append(f"{skipped_error} skipped, parse/API error")
         if details:
@@ -293,6 +318,11 @@ def main():
                           "API's usage stats. The script checks this before every call, "
                           "so actual spend may overshoot slightly (up to ~--workers calls "
                           "worth) since in-flight calls aren't cancelled mid-request.")
+    ap.add_argument("--max-calls", type=int, default=None,
+                     help="hard stop on total API call ATTEMPTS (not just successes), "
+                          "independent of --max-spend. For providers that charge $0 but "
+                          "enforce a request-count quota instead (e.g. OpenRouter free-tier "
+                          "models, which count failed attempts against the quota too).")
     ap.add_argument("--dry-run", action="store_true",
                      help="estimate cost with ZERO API calls made, using worst-case "
                           "token counts per level. Run this first.")
@@ -310,13 +340,13 @@ def main():
         for domain in DOMAINS:
             for level in LEVELS:
                 total += run_combo(client, domain, level, args.variants, args.workers,
-                                    args.max_spend, args.dry_run)
+                                    args.max_spend, args.max_calls, args.dry_run)
     else:
         if not (args.domain and args.level):
             print("Pass --domain and --level, or --all.", file=sys.stderr)
             sys.exit(1)
         total += run_combo(client, args.domain, args.level, args.variants, args.workers,
-                            args.max_spend, args.dry_run)
+                            args.max_spend, args.max_calls, args.dry_run)
 
     with _spend_lock:
         final_spend = _spend_state["usd"]
@@ -327,8 +357,14 @@ def main():
         print("This is a ceiling (assumes every call maxes out its token budget), "
               "real cost is usually lower. Re-run without --dry-run when ready.")
     else:
-        print(f"\nDone. {total} examples written, ${final_spend:.2f} spent, "
-              f"{time.time()-t0:.0f}s. Cap was ${args.max_spend:.2f}.")
+        with _call_lock:
+            final_calls = _call_state["count"]
+        msg = f"\nDone. {total} examples written, ${final_spend:.2f} spent, " \
+              f"{final_calls} API calls made, {time.time()-t0:.0f}s. " \
+              f"Spend cap ${args.max_spend:.2f}"
+        if args.max_calls is not None:
+            msg += f", call cap {args.max_calls}"
+        print(msg + ".")
 
 
 if __name__ == "__main__":
