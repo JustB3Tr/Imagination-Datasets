@@ -189,8 +189,12 @@ def validate_example(example: dict, level: str) -> str | None:
 
     if level == "low" and "<think>" in content:
         return "level is low but final answer contains a <think> block"
-    if level in ("medium", "high") and not content.lstrip().startswith("<think>"):
-        return f"level is {level} but final answer doesn't start with a <think> block"
+    if level in ("medium", "high"):
+        if not content.lstrip().startswith("<think>"):
+            return f"level is {level} but final answer doesn't start with a <think> block"
+        after_think = re.sub(r"^<think>.*?</think>", "", content.lstrip(), count=1, flags=re.DOTALL).strip()
+        if len(after_think) < 10:
+            return f"level is {level} but there's no real answer after the <think> block (truncated)"
 
     # every tool_call must be immediately followed by its matching tool result
     for i, m in enumerate(messages):
