@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -239,6 +240,11 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
         print(f"  [${total:6.3f} total] {domain}/{level}/{mode}", file=sys.stderr)
 
         raw = resp.choices[0].message.content.strip()
+        # Some providers (e.g. Gemma via the Gemini API) inline their chain-of-
+        # thought directly in the visible content as a leading <thought>...
+        # </thought> block instead of hiding it -- strip it before parsing.
+        # No-op for providers that never produce this pattern.
+        raw = re.sub(r"^<thought>.*?</thought>\s*", "", raw, count=1, flags=re.DOTALL)
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
