@@ -81,17 +81,17 @@ _call_lock = threading.Lock()
 _call_state = {"count": 0}
 
 
-def _add_call() -> int:
+def _try_claim_call(max_calls: int | None) -> bool:
+    """Atomically check-and-increment: returns True if this call is allowed to
+    proceed (and counts it), False if the cap is already reached. Doing the
+    check and increment under one lock (instead of two separate calls) is
+    what keeps concurrent workers from all passing the check together and
+    overshooting the cap by up to --workers."""
     with _call_lock:
+        if max_calls is not None and _call_state["count"] >= max_calls:
+            return False
         _call_state["count"] += 1
-        return _call_state["count"]
-
-
-def _over_call_cap(max_calls: int | None) -> bool:
-    if max_calls is None:
-        return False
-    with _call_lock:
-        return _call_state["count"] >= max_calls
+        return True
 
 
 # Fraction of agentic_tool_use / general_code examples that also get a
@@ -196,7 +196,7 @@ def validate_example(example: dict, level: str) -> str | None:
 
 
 def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
-             max_spend: float, max_calls: int | None, dry_run: bool) -> dict | None:
+             max_spend: float, max_calls: int | None, dry_run: bool) -> dict | str | None:
     system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode)
 
     if dry_run:
@@ -204,12 +204,13 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
         total = _add_spend(in_tok, out_tok)
         return {"_dry_run": True, "est_total_usd": total}
 
-    if _over_cap(max_spend) or _over_call_cap(max_calls):
+    if _over_cap(max_spend) or not _try_claim_call(max_calls):
         return "CAPPED"  # cap already hit, don't make the call
 
     try:
-        call_num = _add_call()
         if max_calls is not None:
+            with _call_lock:
+                call_num = _call_state["count"]
             print(f"  [call {call_num}/{max_calls}] {domain}/{level}/{mode}", file=sys.stderr)
         resp = client.chat.completions.create(
             model=MODEL,
@@ -327,6 +328,10 @@ def main():
                      help="estimate cost with ZERO API calls made, using worst-case "
                           "token counts per level. Run this first.")
     args = ap.parse_args()
+
+    if args.max_calls is not None and args.max_calls < 1:
+        print("--max-calls must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
 
     if not args.dry_run and not API_KEY:
         print("Set IMG2_API_KEY first (or use --dry-run, which needs no key).", file=sys.stderr)
