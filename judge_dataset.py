@@ -141,7 +141,9 @@ def judge_one(client: OpenAI, ex: dict, max_calls) -> dict | None:
                     {"role": "user", "content": JUDGE_INSTRUCTIONS + "\n\n---\n\n" + formatted},
                 ],
                 temperature=0.3,
-                max_tokens=600,
+                max_tokens=1600,  # generous headroom for models with mandatory
+                                  # inline thinking (e.g. Gemma) that eats into
+                                  # the budget before producing the verdict
                 extra_body=extra_body,
             )
             raw = resp.choices[0].message.content.strip()
