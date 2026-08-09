@@ -196,10 +196,15 @@ def validate_example(example: dict, level: str) -> str | None:
         if len(after_think) < 10:
             return f"level is {level} but there's no real answer after the <think> block (truncated)"
 
-    # every tool_call must be immediately followed by its matching tool result
+    # every tool_call must be immediately followed by its matching tool result,
+    # and must actually name a function -- a tool_call with arguments but no
+    # function.name is unusable (nothing to dispatch) and json.loads happily
+    # accepts it since it's still valid JSON, so this needs an explicit check.
     for i, m in enumerate(messages):
         for call in m.get("tool_calls") or []:
             call_id = call.get("id")
+            if not (call.get("function") or {}).get("name"):
+                return f"tool_call {call_id!r} is missing function.name"
             nxt = messages[i + 1] if i + 1 < len(messages) else None
             if not nxt or nxt.get("role") != "tool" or nxt.get("tool_call_id") != call_id:
                 return f"tool_call {call_id!r} has no matching tool result message"
