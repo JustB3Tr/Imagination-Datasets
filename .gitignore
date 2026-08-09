@@ -2,5 +2,5 @@ __pycache__/
 *.pyc
 data/raw/
 data/dedup_report.json
-judge_results.jsonl
+judge_results*.jsonl
 .env
