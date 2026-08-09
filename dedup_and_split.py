@@ -96,17 +96,26 @@ def main():
         return
     print(f"Loaded {len(examples)} raw examples.")
 
+    # Identity examples are DELIBERATELY repetitive (same canonical answer,
+    # different question phrasing) so the model learns them by heart -- that
+    # is exactly the pattern near-dup filtering is designed to remove, so
+    # they skip it entirely and always survive intact.
+    identity_examples = [ex for ex in examples if ex.get("meta", {}).get("domain") == "identity"]
+    dedupable_examples = [ex for ex in examples if ex.get("meta", {}).get("domain") != "identity"]
+
     print("Embedding locally (all-MiniLM-L6-v2, first run downloads the model)...")
     model = SentenceTransformer("all-MiniLM-L6-v2")
-    texts = [example_text(ex) for ex in examples]
+    texts = [example_text(ex) for ex in dedupable_examples]
     embeddings = model.encode(texts, batch_size=64, show_progress_bar=True, normalize_embeddings=True)
 
-    kept_idx = greedy_dedup(examples, embeddings, args.sim_threshold)
-    removed = len(examples) - len(kept_idx)
+    kept_idx = greedy_dedup(dedupable_examples, embeddings, args.sim_threshold)
+    removed = len(dedupable_examples) - len(kept_idx)
     print(f"Kept {len(kept_idx)}, dropped {removed} near-duplicates "
-          f"({removed/len(examples)*100:.1f}%) at threshold {args.sim_threshold}.")
+          f"({removed/len(dedupable_examples)*100:.1f}%) at threshold {args.sim_threshold}.")
+    if identity_examples:
+        print(f"({len(identity_examples)} identity examples kept as-is, exempt from dedup.)")
 
-    kept = [examples[i] for i in kept_idx]
+    kept = [dedupable_examples[i] for i in kept_idx] + identity_examples
 
     # bucket counts, so you can see coverage per domain/level before training
     counts = defaultdict(int)
