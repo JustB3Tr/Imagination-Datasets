@@ -103,13 +103,16 @@ def format_example_for_judge(ex: dict) -> str:
     return "\n".join(lines)
 
 
-def load_stratified_sample(path: str, samples_per_bucket: int, seed: int) -> list[dict]:
+def load_stratified_sample(path: str, samples_per_bucket: int, seed: int,
+                            level_filter: str | None = None) -> list[dict]:
     by_bucket = defaultdict(list)
     with open(path) as f:
         for line in f:
             ex = json.loads(line)
             if ex["meta"]["domain"] == "identity":
                 continue  # trivially uniform by design, nothing to judge
+            if level_filter and ex["meta"]["level"] != level_filter:
+                continue
             key = (ex["meta"]["domain"], ex["meta"]["level"], ex["meta"]["mode"])
             by_bucket[key].append(ex)
 
@@ -173,13 +176,15 @@ def main():
     ap.add_argument("--workers", type=int, default=2,
                      help="Keep low for free-tier providers with per-minute quotas.")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--level", choices=["low", "medium", "high"], default=None,
+                     help="Judge only buckets at this reasoning level.")
     args = ap.parse_args()
 
     if not API_KEY:
         print("Set IMG2_API_KEY first.", file=sys.stderr)
         sys.exit(1)
 
-    sample = load_stratified_sample(args.input, args.samples_per_bucket, args.seed)
+    sample = load_stratified_sample(args.input, args.samples_per_bucket, args.seed, args.level)
     print(f"Judging {len(sample)} examples ({args.samples_per_bucket}/bucket) with {MODEL} ...")
 
     client = OpenAI(api_key=API_KEY, base_url=API_BASE)
