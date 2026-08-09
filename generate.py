@@ -49,6 +49,13 @@ API_KEY = os.environ.get("IMG2_API_KEY")
 API_BASE = os.environ.get("IMG2_API_BASE", "https://api.deepseek.com")
 MODEL = os.environ.get("IMG2_MODEL", "deepseek-chat")
 
+# Some providers (e.g. Gemini) run hidden "thinking" tokens that eat into
+# max_tokens before any visible output is produced, silently truncating
+# generations that would otherwise fit. Set IMG2_REASONING_EFFORT=none (or
+# whatever value the provider expects) to suppress that; passed through as
+# extra_body so it's a no-op for providers that don't recognize the field.
+REASONING_EFFORT = os.environ.get("IMG2_REASONING_EFFORT")
+
 # $ per 1M tokens. Defaults are direct DeepSeek V4 Flash rates as of Aug 2026.
 # If you're on OpenRouter, override these (their DeepSeek route runs a bit
 # higher, roughly $0.21/$0.31 per 1M as of this writing, check your dashboard).
@@ -212,6 +219,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             with _call_lock:
                 call_num = _call_state["count"]
             print(f"  [call {call_num}/{max_calls}] {domain}/{level}/{mode}", file=sys.stderr)
+        extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}
         resp = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -220,6 +228,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             ],
             temperature=0.9,
             max_tokens=max_output_tokens(level, mode),
+            extra_body=extra_body,
         )
         usage = getattr(resp, "usage", None)
         if usage:
