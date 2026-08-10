@@ -147,6 +147,12 @@ Rules:
 - make the scenario concrete: real file names, real error messages, real
   numbers. Avoid generic placeholder text like "some function" or "an error occurred".
 - vary the specifics from the seed task description, do not just restate it.
+- the response MUST end with the JSON object fully closed (final "}"} --
+  never stop output while still inside a string value, even in a later
+  assistant message that nests tool-result-shaped text (e.g. a "content"
+  field containing what looks like its own JSON). If you're running low on
+  room, wrap up the current message and close the JSON early rather than
+  leaving a string unterminated.
 """.strip()
 
 
