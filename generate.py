@@ -78,6 +78,10 @@ _spend_state = {"usd": 0.0, "capped": False}
 def _add_spend(prompt_tokens: int, completion_tokens: int) -> float:
     cost = (prompt_tokens / 1_000_000) * PRICE_INPUT_PER_1M + \
            (completion_tokens / 1_000_000) * PRICE_OUTPUT_PER_1M
+    return _add_actual_spend(cost)
+
+
+def _add_actual_spend(cost: float) -> float:
     with _spend_lock:
         _spend_state["usd"] += cost
         total = _spend_state["usd"]
@@ -256,7 +260,18 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             extra_body=extra_body,
         )
         usage = getattr(resp, "usage", None)
-        if usage:
+        # OpenRouter reports the real, authoritative per-call dollar cost as
+        # usage.cost (a non-standard field the openai SDK still exposes via
+        # its pydantic extra="allow" passthrough). Prefer that over our own
+        # price-per-token estimate when it's present -- it can't drift from
+        # whatever OpenRouter actually billed, unlike a hardcoded rate that
+        # might be stale for a specific pinned provider/route. Direct
+        # provider APIs (e.g. DeepSeek's own endpoint) don't return this
+        # field, so this falls back to the token-based estimate for those.
+        actual_cost = getattr(usage, "cost", None) if usage else None
+        if actual_cost is not None:
+            total = _add_actual_spend(actual_cost)
+        elif usage:
             total = _add_spend(usage.prompt_tokens, usage.completion_tokens)
         else:
             in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
