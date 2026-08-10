@@ -94,7 +94,8 @@ def format_example_for_judge(ex: dict) -> str:
         content = m.get("content") or ""
         if m.get("tool_calls"):
             calls = "; ".join(
-                f"{tc['function']['name']}({tc['function']['arguments']})"
+                f"{tc.get('function', {}).get('name', '<missing>')}"
+                f"({tc.get('function', {}).get('arguments', '<missing>')})"
                 for tc in m["tool_calls"]
             )
             lines.append(f"[{role} -> tool_calls] {calls}")
@@ -196,7 +197,13 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(judge_one, client, ex, args.max_calls): ex for ex in sample}
             for fut in as_completed(futures):
-                verdict = fut.result()
+                ex = futures[fut]
+                try:
+                    verdict = fut.result()
+                except Exception as e:
+                    print(f"  [skip, judge crashed] {ex['meta']['domain']}/{ex['meta']['level']}/"
+                          f"{ex['meta']['mode']}: {e}", file=sys.stderr)
+                    continue
                 if verdict in (None, "CAPPED"):
                     continue
                 out_f.write(json.dumps(verdict) + "\n")

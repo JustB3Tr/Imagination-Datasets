@@ -203,8 +203,11 @@ def validate_example(example: dict, level: str) -> str | None:
     for i, m in enumerate(messages):
         for call in m.get("tool_calls") or []:
             call_id = call.get("id")
-            if not (call.get("function") or {}).get("name"):
+            fn = call.get("function") or {}
+            if not fn.get("name"):
                 return f"tool_call {call_id!r} is missing function.name"
+            if "arguments" not in fn:
+                return f"tool_call {call_id!r} is missing function.arguments"
             nxt = messages[i + 1] if i + 1 < len(messages) else None
             if not nxt or nxt.get("role") != "tool" or nxt.get("tool_call_id") != call_id:
                 return f"tool_call {call_id!r} has no matching tool result message"
