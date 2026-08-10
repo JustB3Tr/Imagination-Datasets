@@ -15,10 +15,15 @@ DOMAINS = ["agentic_tool_use", "subagent_orchestration", "general_code"]
 MAX_TOKENS_BY_LEVEL = {
     "low": 500,      # little to no visible reasoning, answer fast
     "medium": 1000,  # some visible reasoning, a few steps
-    "high": 3200,    # explicit, thorough step-by-step reasoning + a real,
+    "high": 6000,    # explicit, thorough step-by-step reasoning + a real,
                       # complete answer -- 2000 was routinely truncating on
                       # examples with substantial code (an LLM-as-judge audit
-                      # found ~30% of "high" examples cut off mid-answer)
+                      # found ~30% of "high" examples cut off mid-answer), and
+                      # 3200 still hit finish_reason="length" on a real
+                      # DeepSeek V4 Flash (gmicloud/fp8) call for a code-heavy
+                      # task (15.9k chars written, cut off mid-sentence).
+                      # Output tokens are cheap ($0.224/1M on this route), so
+                      # the safety margin costs essentially nothing.
 }
 
 LEVEL_INSTRUCTIONS = {
@@ -114,6 +119,11 @@ Rules:
 - assistant messages that call tools must include a "tool_calls" field
   (OpenAI-style: list of {"id", "type": "function", "function": {"name", "arguments"}}).
 - every tool_call must be followed by a matching {"role": "tool", "tool_call_id": ..., "content": "<realistic tool result>"} message.
+- NEVER narrate a tool call in prose (e.g. "I'll call file_search with a
+  query..." followed by another assistant message with the result). If the
+  assistant uses a tool, it MUST be a real "tool_calls" entry on that message,
+  immediately followed by a "role": "tool" result message -- never two
+  "role": "assistant" messages back to back.
 - the final assistant message must NOT call a tool, it must contain the final answer.
 - if reasoning_effort is medium or high, the final assistant message's content
   must start with a <think>...</think> block before the answer.

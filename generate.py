@@ -190,6 +190,17 @@ def validate_example(example: dict, level: str) -> str | None:
     if messages[1].get("role") != "user":
         return f"second message role is '{messages[1].get('role')}', not user"
 
+    # A valid conversation only ever alternates assistant-with-tool_calls with
+    # its matching tool-result, ending in one final plain assistant message.
+    # Two assistant messages back to back should never happen -- when it does,
+    # it's usually the model narrating a fake tool call in prose ("I'll call
+    # file_search with a query...") instead of emitting real tool_calls, then
+    # putting what should be a tool-role result into a second assistant
+    # message. That teaches exactly the wrong tool-use pattern, so reject it.
+    for i in range(len(messages) - 1):
+        if messages[i].get("role") == "assistant" and messages[i + 1].get("role") == "assistant":
+            return "two consecutive assistant messages (likely narrated a fake tool call in prose)"
+
     last = messages[-1]
     if last.get("role") != "assistant":
         return f"last message role is '{last.get('role')}', not assistant (truncated conversation)"
