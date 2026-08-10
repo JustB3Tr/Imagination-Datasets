@@ -15,7 +15,10 @@ DOMAINS = ["agentic_tool_use", "subagent_orchestration", "general_code"]
 MAX_TOKENS_BY_LEVEL = {
     "low": 500,      # little to no visible reasoning, answer fast
     "medium": 1000,  # some visible reasoning, a few steps
-    "high": 2000,    # explicit, thorough step-by-step reasoning
+    "high": 3200,    # explicit, thorough step-by-step reasoning + a real,
+                      # complete answer -- 2000 was routinely truncating on
+                      # examples with substantial code (an LLM-as-judge audit
+                      # found ~30% of "high" examples cut off mid-answer)
 }
 
 LEVEL_INSTRUCTIONS = {
@@ -28,9 +31,17 @@ LEVEL_INSTRUCTIONS = {
         "(2-5 sentences) covering the key decision points, then the answer."
     ),
     "high": (
-        "reasoning_effort: high. Include a thorough <think>...</think> block "
-        "that walks through the problem, considers at least one alternative "
-        "approach and why it was rejected, then the answer."
+        "reasoning_effort: high. Before calling any tool or taking any "
+        "action, include a thorough <think>...</think> block written as "
+        "genuine upfront deliberation -- NOT a summary of what you already "
+        "did or are about to report. Inside it: (1) restate the core "
+        "problem in your own words, (2) name ONE specific, concrete "
+        "alternative approach and give a specific technical reason it was "
+        "rejected (not a generic dismissal like 'this could also work but "
+        "is more complex'), (3) explain concretely why the chosen approach "
+        "is better for this exact situation. After the think block, write "
+        "a COMPLETE final answer -- finish any code you start, do not stop "
+        "partway through."
     ),
 }
 
