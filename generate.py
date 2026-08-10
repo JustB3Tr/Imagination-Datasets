@@ -57,6 +57,12 @@ MODEL = os.environ.get("IMG2_MODEL", "deepseek-chat")
 # extra_body so it's a no-op for providers that don't recognize the field.
 REASONING_EFFORT = os.environ.get("IMG2_REASONING_EFFORT")
 
+# OpenRouter routes a given model through multiple backend providers, often
+# at different prices/quantization. Set IMG2_OPENROUTER_PROVIDER to pin a
+# specific one (e.g. "gmicloud" for their fp8 DeepSeek V4 Flash route)
+# instead of letting OpenRouter auto-select. No-op for non-OpenRouter bases.
+OPENROUTER_PROVIDER = os.environ.get("IMG2_OPENROUTER_PROVIDER")
+
 # $ per 1M tokens. Defaults are direct DeepSeek V4 Flash rates as of Aug 2026.
 # If you're on OpenRouter, override these (their DeepSeek route runs a bit
 # higher, roughly $0.21/$0.31 per 1M as of this writing, check your dashboard).
@@ -232,7 +238,11 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             with _call_lock:
                 call_num = _call_state["count"]
             print(f"  [call {call_num}/{max_calls}] {domain}/{level}/{mode}", file=sys.stderr)
-        extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}
+        extra_body = {}
+        if REASONING_EFFORT:
+            extra_body["reasoning_effort"] = REASONING_EFFORT
+        if OPENROUTER_PROVIDER:
+            extra_body["provider"] = {"order": [OPENROUTER_PROVIDER], "allow_fallbacks": False}
         resp = client.chat.completions.create(
             model=MODEL,
             messages=[
