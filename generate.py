@@ -224,15 +224,25 @@ def validate_example(example: dict, level: str) -> str | None:
     # function.name is unusable (nothing to dispatch) and json.loads happily
     # accepts it since it's still valid JSON, so this needs an explicit check.
     for i, m in enumerate(messages):
-        for call in m.get("tool_calls") or []:
+        calls = m.get("tool_calls") or []
+        # A message can carry multiple tool_calls (OpenAI-style parallel
+        # calls); each must have a matching "role": "tool" result somewhere
+        # in the next len(calls) messages, not necessarily at i+1 -- checking
+        # only messages[i+1] would reject every valid multi-call message
+        # after the first.
+        following_tool_ids = {
+            messages[j].get("tool_call_id")
+            for j in range(i + 1, min(i + 1 + len(calls), len(messages)))
+            if messages[j].get("role") == "tool"
+        }
+        for call in calls:
             call_id = call.get("id")
             fn = call.get("function") or {}
             if not fn.get("name"):
                 return f"tool_call {call_id!r} is missing function.name"
             if "arguments" not in fn:
                 return f"tool_call {call_id!r} is missing function.arguments"
-            nxt = messages[i + 1] if i + 1 < len(messages) else None
-            if not nxt or nxt.get("role") != "tool" or nxt.get("tool_call_id") != call_id:
+            if call_id not in following_tool_ids:
                 return f"tool_call {call_id!r} has no matching tool result message"
 
     return None
@@ -293,7 +303,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             # field, so this falls back to the token-based estimate for those.
             actual_cost = getattr(usage, "cost", None) if usage else None
             if actual_cost is not None:
-                total = _add_actual_spend(actual_cost)
+                total = _add_actual_spend(float(actual_cost))
             elif usage:
                 total = _add_spend(usage.prompt_tokens, usage.completion_tokens)
             else:

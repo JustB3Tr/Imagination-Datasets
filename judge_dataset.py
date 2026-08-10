@@ -100,6 +100,8 @@ def format_example_for_judge(ex: dict) -> str:
             )
             lines.append(f"[{role} -> tool_calls] {calls}")
         else:
+            if not isinstance(content, str):
+                content = json.dumps(content)
             lines.append(f"[{role}] {content[:3000]}")
     return "\n".join(lines)
 
