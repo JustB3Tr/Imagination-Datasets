@@ -43,7 +43,9 @@ from schema_templates import (
 
 ROOT = Path(__file__).parent
 SEEDS_DIR = ROOT / "seeds"
-OUT_DIR = ROOT / "data" / "raw"
+# Override for test/comparison runs so they don't append into the same raw
+# files as real production generations (those get merged via dedup_and_split.py).
+OUT_DIR = Path(os.environ.get("IMG2_OUT_DIR", str(ROOT / "data" / "raw")))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 API_KEY = os.environ.get("IMG2_API_KEY")

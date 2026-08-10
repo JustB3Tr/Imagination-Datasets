@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 data/raw/
+data/test_free_compare/
 data/dedup_report.json
 judge_results*.jsonl
 .env
