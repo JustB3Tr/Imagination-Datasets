@@ -27,16 +27,28 @@ MAX_TOKENS_BY_LEVEL = {
 }
 
 LEVEL_INSTRUCTIONS = {
+    # These deliberately avoid the literal phrase "reasoning_effort: X" --
+    # that string collides with the actual API-level reasoning_effort
+    # parameter some generator calls pass (e.g. "none", to suppress a
+    # provider's hidden/native chain-of-thought and avoid silent truncation).
+    # Telling the model in-content "reasoning_effort: high" while the real
+    # API parameter says "none" is a direct, visible contradiction, and
+    # models that are sensitive to their own reasoning_effort setting seem
+    # to resolve it by trusting the real parameter and skipping the
+    # requested <think> block entirely (observed empirically: DeepSeek V4
+    # Flash dropped the <think> block in a large fraction of "high" calls
+    # once reasoning_effort=none was introduced). Describing the desired
+    # CONTENT directly, without naming the parameter, avoids that collision.
     "low": (
-        "reasoning_effort: low. Do NOT include a <think> block. Go straight "
+        "Do NOT include a <think> block. Go straight "
         "to the action/answer. Keep it tight."
     ),
     "medium": (
-        "reasoning_effort: medium. Include a short <think>...</think> block "
+        "Include a short <think>...</think> block "
         "(2-5 sentences) covering the key decision points, then the answer."
     ),
     "high": (
-        "reasoning_effort: high. Before calling any tool or taking any "
+        "Before calling any tool or taking any "
         "action, include a thorough <think>...</think> block written as "
         "genuine upfront deliberation -- NOT a summary of what you already "
         "did or are about to report. Inside it: (1) restate the core "
