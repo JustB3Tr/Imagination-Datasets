@@ -93,7 +93,7 @@ print("Training started in the background. Run the next cell to check on it.")
 Run this cell any time to see progress:
 
 ```python
-!tail -n 40 {OUTPUT_DIR}/train.log
+!tail -n 50 {OUTPUT_DIR}/train.log
 ```
 
 ## If the runtime disconnects
