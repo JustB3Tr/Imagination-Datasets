@@ -97,8 +97,31 @@ def normalize_message(m: dict) -> dict:
     return out
 
 
+def has_unparseable_arguments(messages: list[dict]) -> bool:
+    """True if any tool_call's function.arguments string isn't valid JSON
+    that decodes to a dict. Qwen's chat_template does
+    `tool_call.arguments|items`, which requires a real dict at render time --
+    a small fraction of generated rows have arguments strings with
+    under-escaped backslashes (e.g. a regex \\K written as \\K instead of
+    \\\\K), which are technically valid strings but not valid JSON. Better to
+    drop the ~5% of rows affected than crash the whole training run on them
+    or silently feed the tokenizer a malformed example."""
+    for m in messages:
+        for tc in (m.get("tool_calls") or []):
+            args = (tc.get("function") or {}).get("arguments")
+            if not isinstance(args, str):
+                continue
+            try:
+                if not isinstance(json.loads(args), dict):
+                    return True
+            except json.JSONDecodeError:
+                return True
+    return False
+
+
 def load_jsonl_messages(path: str) -> list[dict]:
     examples = []
+    n_dropped = 0
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -107,7 +130,14 @@ def load_jsonl_messages(path: str) -> list[dict]:
             row = json.loads(line)
             # meta (domain/level/mode/seed_task) isn't needed for training,
             # only the actual conversation.
-            examples.append({"messages": [normalize_message(m) for m in row["messages"]]})
+            messages = [normalize_message(m) for m in row["messages"]]
+            if has_unparseable_arguments(messages):
+                n_dropped += 1
+                continue
+            examples.append({"messages": messages})
+    if n_dropped:
+        print(f"Dropped {n_dropped} example(s) from {path}: "
+              f"tool_call arguments weren't valid JSON (under-escaped backslashes).")
     return examples
 
 
@@ -189,12 +219,42 @@ def main():
     except FileNotFoundError:
         print("No eval.jsonl found, training without a held-out eval set.")
 
+    def for_template(messages):
+        # Qwen's chat_template.jinja does
+        # `{% for args_name, args_value in tool_call.arguments|items %}`,
+        # which requires tool_call.arguments to be an actual dict -- but the
+        # dataset stores it as a JSON-encoded string (the correct format for
+        # the JSONL/Arrow data itself, and what OpenAI's tool-calling API
+        # expects on the wire). Parse it back to a dict here, at render time
+        # only, so this doesn't fight the stored format load_jsonl_messages
+        # normalized everything to.
+        rendered = []
+        for m in messages:
+            m2 = dict(m)
+            tool_calls = m2.get("tool_calls")
+            if tool_calls:
+                new_calls = []
+                for tc in tool_calls:
+                    tc2 = dict(tc)
+                    fn = dict(tc2.get("function") or {})
+                    args = fn.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            fn["arguments"] = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            pass  # leave as-is; template will surface the bad row
+                    tc2["function"] = fn
+                    new_calls.append(tc2)
+                m2["tool_calls"] = new_calls
+            rendered.append(m2)
+        return rendered
+
     def to_text(example):
         # Uses the tokenizer's own chat template so tool_calls/tool-result
         # formatting matches what the base model already learned during
         # pretraining, instead of fighting its priors with something custom.
         return {"text": tokenizer.apply_chat_template(
-            example["messages"], tokenize=False, add_generation_prompt=False
+            for_template(example["messages"]), tokenize=False, add_generation_prompt=False
         )}
 
     train_ds = Dataset.from_list(train_rows).map(to_text)
