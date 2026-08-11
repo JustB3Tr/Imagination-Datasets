@@ -29,8 +29,72 @@ RAW_DIR = ROOT / "data" / "raw"
 OUT_DIR = ROOT / "data"
 
 
+# A real fraction of generated rows have a tool_call function.arguments
+# string that isn't valid JSON -- usually an under-escaped backslash inside
+# a regex/command/path (e.g. a regex \K written as \K instead of \\K) or a
+# raw literal newline where \n was needed. Both are recoverable without
+# guessing at content. Rows with a genuinely unescaped quote character
+# (e.g. `grep -R "pip install"` with the inner quotes never escaped) are
+# NOT recoverable this way -- the string boundary itself is ambiguous, and
+# guessing where a quote belongs risks silently corrupting the example, so
+# those are left for the downstream consumer (train.py) to drop.
+_JSON_VALID_ESCAPES = set('"\\/bfnrtu')
+
+
+def _try_parse_dict(s: str, strict: bool = True):
+    try:
+        obj = json.loads(s, strict=strict)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _double_stray_backslashes(s: str) -> str:
+    out = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s) and s[i + 1] not in _JSON_VALID_ESCAPES:
+            out.append("\\\\")
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def repair_tool_call_arguments(s: str) -> str | None:
+    """Return a JSON string that decodes to a dict, repairing under-escaped
+    backslashes and/or raw control characters if needed, or None if it's
+    not safely recoverable."""
+    if _try_parse_dict(s) is not None or _try_parse_dict(s, strict=False) is not None:
+        return s
+    fixed = _double_stray_backslashes(s)
+    if _try_parse_dict(fixed) is not None or _try_parse_dict(fixed, strict=False) is not None:
+        return fixed
+    return None
+
+
+def repair_example_arguments(ex: dict) -> int:
+    """Repair tool_call arguments in place across every message. Returns
+    the number of arguments strings that were actually changed."""
+    n_repaired = 0
+    for m in ex.get("messages", []):
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            args = fn.get("arguments")
+            if not isinstance(args, str) or _try_parse_dict(args) is not None:
+                continue
+            fixed = repair_tool_call_arguments(args)
+            if fixed is not None and fixed != args:
+                fn["arguments"] = fixed
+                n_repaired += 1
+    return n_repaired
+
+
 def load_all_raw():
     examples = []
+    n_repaired = 0
     for path in sorted(RAW_DIR.glob("*.jsonl")):
         with open(path) as f:
             for line in f:
@@ -38,9 +102,16 @@ def load_all_raw():
                 if not line:
                     continue
                 try:
-                    examples.append(json.loads(line))
+                    ex = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                n_repaired += repair_example_arguments(ex)
+                examples.append(ex)
+    if n_repaired:
+        print(f"Repaired {n_repaired} tool_call argument string(s) with under-escaped "
+              f"backslashes/control characters (still-broken ones are left for "
+              f"train.py to drop -- those have an unescaped quote, not safely "
+              f"auto-fixable).")
     return examples
 
 
