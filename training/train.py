@@ -63,6 +63,40 @@ def find_dataset_file(name: str) -> str:
     )
 
 
+def normalize_message(m: dict) -> dict:
+    """Coerce a message dict to a fixed, consistent shape. A handful of
+    earlier-generated rows have divergent shapes -- some tool_calls store
+    "arguments" as a raw dict instead of the required JSON-encoded string,
+    and some messages carry stray extra keys ("name", "status",
+    "additional_props", or "message" instead of "content"). datasets.
+    Dataset.from_list infers one PyArrow struct schema across every message
+    in the column, so any shape variance raises
+    "ArrowInvalid: cannot mix struct and non-struct, non-null values" --
+    normalizing every message to the same key set/types here fixes it
+    without needing to regenerate the affected rows."""
+    content = m.get("content")
+    if content is None and "message" in m:
+        content = m.get("message")  # rare typo'd field from one bad row
+    out = {"role": m.get("role"), "content": content}
+    tool_calls = m.get("tool_calls")
+    if tool_calls:
+        fixed_calls = []
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            args = fn.get("arguments")
+            if isinstance(args, (dict, list)):
+                args = json.dumps(args)
+            fixed_calls.append({
+                "id": tc.get("id"),
+                "type": tc.get("type", "function"),
+                "function": {"name": fn.get("name"), "arguments": args},
+            })
+        out["tool_calls"] = fixed_calls
+    if m.get("tool_call_id"):
+        out["tool_call_id"] = m["tool_call_id"]
+    return out
+
+
 def load_jsonl_messages(path: str) -> list[dict]:
     examples = []
     with open(path) as f:
@@ -73,7 +107,7 @@ def load_jsonl_messages(path: str) -> list[dict]:
             row = json.loads(line)
             # meta (domain/level/mode/seed_task) isn't needed for training,
             # only the actual conversation.
-            examples.append({"messages": row["messages"]})
+            examples.append({"messages": [normalize_message(m) for m in row["messages"]]})
     return examples
 
 

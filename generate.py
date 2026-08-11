@@ -242,6 +242,15 @@ def validate_example(example: dict, level: str) -> str | None:
                 return f"tool_call {call_id!r} is missing function.name"
             if "arguments" not in fn:
                 return f"tool_call {call_id!r} is missing function.arguments"
+            if not isinstance(fn["arguments"], str):
+                # Must be a JSON-encoded string per the OpenAI tool-calling
+                # format, not a raw object -- models occasionally emit the
+                # object directly. json.loads doesn't catch this (a dict is
+                # still valid JSON), but it silently breaks anything that
+                # assumes a string here, including datasets.Dataset.from_list
+                # at train time (PyArrow needs one consistent struct schema
+                # across every message, and a str-vs-dict split fails that).
+                return f"tool_call {call_id!r} has non-string function.arguments ({type(fn['arguments']).__name__})"
             if call_id not in following_tool_ids:
                 return f"tool_call {call_id!r} has no matching tool result message"
 
