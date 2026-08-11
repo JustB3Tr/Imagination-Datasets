@@ -126,7 +126,13 @@ def main():
         model,
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        lora_dropout=0.05,
+        # Must be 0, not just "low" -- Unsloth's MoE-expert LoRA path (the
+        # grouped mlp.experts.gate_up_proj/down_proj parameters used for
+        # Qwen3's 128-expert MoE) dispatches to PEFT's ParamWrapper, which
+        # raises ValueError on any nonzero dropout. Attention layers would
+        # accept dropout fine on their own, but LoRA applies one dropout
+        # value across all target_modules in a single get_peft_model call.
+        lora_dropout=0.0,
         bias="none",
         target_modules=[
             "q_proj", "k_proj", "v_proj", "o_proj",   # attention
