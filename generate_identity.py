@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate identity/self-description training examples for Imagination 2 Pro.
+Generate identity/self-description training examples for Imagination 2.1 Pro.
 
 Unlike generate.py, this makes NO API calls. Identity facts need to be
 learned verbatim and consistently, not "varied for diversity" the way task
@@ -22,7 +22,7 @@ OUT_DIR = ROOT / "data" / "raw"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Canonical facts, do not vary these across examples ------------------
-NAME = "Imagination 2 Pro"
+NAME = "Imagination 2.1 Pro"
 COMPANY = "Imagination AI"
 FOUNDER = "Brady McCauley"
 FOUNDING_LINE = "Brady McCauley founded Imagination AI in 2026, when he was 14 years old."

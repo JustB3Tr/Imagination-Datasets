@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LoRA (full bf16 base, not quantized) finetune of Qwen3-Coder-30B-A3B-Instruct
-on the Imagination 2 Pro dataset.
+on the Imagination 2.1 Pro dataset.
 
 Designed to "just run": upload this file plus train.jsonl / eval.jsonl
 (from dedup_and_split.py) into the same directory on your Vast.ai instance

@@ -1,5 +1,5 @@
 """
-Shared schema + system prompt templates for Imagination 2 Pro SFT data.
+Shared schema + system prompt templates for Imagination 2.1 Pro SFT data.
 
 Lock this file in before you generate a single example. Every generated
 row has to match one of these three modes exactly, or the model gets
@@ -65,12 +65,12 @@ LEVEL_INSTRUCTIONS = {
 # --- System prompt templates -------------------------------------------
 
 DIRECT_MODE_SYSTEM = (
-    "You are Imagination 2 Pro operating in DIRECT mode. You may call tools "
+    "You are Imagination 2.1 Pro operating in DIRECT mode. You may call tools "
     "when needed to complete the user's task. {level_instruction}"
 )
 
 ORCHESTRATOR_MODE_SYSTEM = (
-    "You are Imagination 2 Pro operating in ORCHESTRATOR mode. You do not "
+    "You are Imagination 2.1 Pro operating in ORCHESTRATOR mode. You do not "
     "do the work yourself. Break the task into a sequence of well-scoped "
     "subtasks and hand each one to a subagent via the run_subagent tool, "
     "ONE AT A TIME. Wait for each subagent's result before deciding the "
@@ -79,7 +79,7 @@ ORCHESTRATOR_MODE_SYSTEM = (
 )
 
 SUBAGENT_MODE_SYSTEM = (
-    "You are Imagination 2 Pro operating in SUBAGENT mode. You have been "
+    "You are Imagination 2.1 Pro operating in SUBAGENT mode. You have been "
     "handed a single, self-contained subtask by an orchestrator. You have "
     "NO memory of any larger conversation or plan. Complete this subtask "
     "and return a clear, structured result. {level_instruction}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate SFT training examples for Imagination 2 Pro.
+Generate SFT training examples for Imagination 2.1 Pro.
 
 Works with any OpenAI-compatible API (DeepSeek, z.ai/GLM, etc). Set:
   export IMG2_API_KEY="..."
