@@ -63,6 +63,48 @@ def find_dataset_file(name: str) -> str:
     )
 
 
+# A real fraction of generated rows have a tool_call function.arguments
+# string that isn't valid JSON -- usually an under-escaped backslash inside
+# a regex/command/path (e.g. a regex \K written as \K instead of \\K) or a
+# raw literal newline where \n was needed. Both are recoverable without
+# guessing at content. Rows with a genuinely unescaped quote character
+# (e.g. `grep -R "pip install"` with the inner quotes never escaped) are
+# NOT recoverable this way -- the string boundary itself is ambiguous, and
+# guessing where a quote belongs risks silently corrupting the example, so
+# those still get dropped below. This mirrors repair_tool_call_arguments in
+# dedup_and_split.py -- kept as a fallback here too, for anyone running
+# train.py directly against freshly-generated raw data that hasn't gone
+# through dedup_and_split.py yet.
+_JSON_VALID_ESCAPES = set('"\\/bfnrtu')
+
+
+def _try_parse_dict(s: str, strict: bool = True):
+    try:
+        obj = json.loads(s, strict=strict)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _repair_tool_call_arguments(s: str) -> str | None:
+    if _try_parse_dict(s) is not None or _try_parse_dict(s, strict=False) is not None:
+        return s
+    out = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s) and s[i + 1] not in _JSON_VALID_ESCAPES:
+            out.append("\\\\")
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    fixed = "".join(out)
+    if _try_parse_dict(fixed) is not None or _try_parse_dict(fixed, strict=False) is not None:
+        return fixed
+    return None
+
+
 def normalize_message(m: dict) -> dict:
     """Coerce a message dict to a fixed, consistent shape. A handful of
     earlier-generated rows have divergent shapes -- some tool_calls store
@@ -86,6 +128,10 @@ def normalize_message(m: dict) -> dict:
             args = fn.get("arguments")
             if isinstance(args, (dict, list)):
                 args = json.dumps(args)
+            elif isinstance(args, str) and _try_parse_dict(args) is None:
+                repaired = _repair_tool_call_arguments(args)
+                if repaired is not None:
+                    args = repaired
             fixed_calls.append({
                 "id": tc.get("id"),
                 "type": tc.get("type", "function"),
@@ -99,22 +145,18 @@ def normalize_message(m: dict) -> dict:
 
 def has_unparseable_arguments(messages: list[dict]) -> bool:
     """True if any tool_call's function.arguments string isn't valid JSON
-    that decodes to a dict. Qwen's chat_template does
-    `tool_call.arguments|items`, which requires a real dict at render time --
-    a small fraction of generated rows have arguments strings with
-    under-escaped backslashes (e.g. a regex \\K written as \\K instead of
-    \\\\K), which are technically valid strings but not valid JSON. Better to
-    drop the ~5% of rows affected than crash the whole training run on them
-    or silently feed the tokenizer a malformed example."""
+    that decodes to a dict, after normalize_message's repair pass. Qwen's
+    chat_template does `tool_call.arguments|items`, which requires a real
+    dict at render time -- rows with a genuinely unescaped quote character
+    aren't safely repairable, so those still get dropped here rather than
+    crashing the whole training run or feeding the tokenizer malformed
+    data."""
     for m in messages:
         for tc in (m.get("tool_calls") or []):
             args = (tc.get("function") or {}).get("arguments")
             if not isinstance(args, str):
                 continue
-            try:
-                if not isinstance(json.loads(args), dict):
-                    return True
-            except json.JSONDecodeError:
+            if _try_parse_dict(args) is None:
                 return True
     return False
 
