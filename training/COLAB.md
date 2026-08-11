@@ -71,13 +71,27 @@ Then actually look at the saved preview file:
 print(open(f"{OUTPUT_DIR}/formatted_preview.txt").read()[:2000])
 ```
 
-## Cell 6 — Real run (backgrounded, so you can keep using the notebook)
+## Cell 6 — Real run
 
-Use Python's own `subprocess.Popen` to launch it, not `!nohup ... &`.
-Colab's `!` shell-out magic doesn't reliably detach a background job the
-way a real terminal does -- `!nohup ... &` can still leave the cell
-blocking for the full training run instead of returning immediately.
-`subprocess.Popen` sidesteps that entirely and returns control right away:
+```python
+!python train.py --output_dir {OUTPUT_DIR} \
+  --train_file ../data/train_low_medium.jsonl \
+  --eval_file ../data/eval_low_medium.jsonl
+```
+
+This runs in the foreground: the cell blocks and streams training output
+live for the whole run. You can't use other cells until it finishes (or
+you interrupt it), and if the tab disconnects the process dies -- but
+checkpointing means rerunning this exact command resumes from the last
+save instead of starting over, so nothing is lost.
+
+### Alternative: backgrounded, so you can keep using the notebook
+
+If you'd rather free up the notebook while it trains, launch it with
+Python's own `subprocess.Popen` instead of running it in the cell directly
+(Colab's `!` shell-out magic doesn't reliably detach a background job the
+way a real terminal does -- `!nohup ... &` can leave the cell blocking for
+the full run anyway):
 
 ```python
 import os, subprocess
@@ -97,15 +111,7 @@ proc = subprocess.Popen(
 print(f"Training started in background, PID {proc.pid}")
 ```
 
-The cell finishes instantly (you'll see the PID print right away) while
-training keeps running behind it. The process survives closing the tab,
-**as long as the Colab runtime itself isn't disconnected/recycled** (Pro's
-idle timeout is around 90 minutes of tab inactivity, so don't walk away
-for too long without checking in).
-
-## Cell 7 — Check on it
-
-Run this cell any time to see progress:
+Then check progress any time with:
 
 ```python
 !tail -n 50 {OUTPUT_DIR}/train.log
