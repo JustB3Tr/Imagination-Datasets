@@ -73,20 +73,31 @@ print(open(f"{OUTPUT_DIR}/formatted_preview.txt").read()[:2000])
 
 ## Cell 6 — Real run (backgrounded, so you can keep using the notebook)
 
-`nohup ... &` inside a Colab cell backgrounds the process instead of
-blocking the cell forever — same trick as running it in `tmux` on a real
-box. The training itself keeps going even if you close the tab, **as long
-as the Colab runtime itself isn't disconnected/recycled** (Pro's idle
-timeout is around 90 minutes of tab inactivity, so don't walk away for too
-long without checking in).
+Use Python's own `subprocess.Popen` to launch it, not `!nohup ... &`.
+Colab's `!` shell-out magic doesn't reliably detach a background job the
+way a real terminal does -- `!nohup ... &` can still leave the cell
+blocking for the full training run instead of returning immediately.
+`subprocess.Popen` sidesteps that entirely and returns control right away:
 
 ```python
-!nohup python train.py --output_dir {OUTPUT_DIR} \
-  --train_file ../data/train_low_medium.jsonl \
-  --eval_file ../data/eval_low_medium.jsonl \
-  > {OUTPUT_DIR}/train.log 2>&1 &
-print("Training started in the background. Run the next cell to check on it.")
+import subprocess
+
+log_path = f"{OUTPUT_DIR}/train.log"
+proc = subprocess.Popen(
+    ["python", "train.py", "--output_dir", OUTPUT_DIR,
+     "--train_file", "../data/train_low_medium.jsonl",
+     "--eval_file", "../data/eval_low_medium.jsonl"],
+    stdout=open(log_path, "w"),
+    stderr=subprocess.STDOUT,
+)
+print(f"Training started in background, PID {proc.pid}")
 ```
+
+The cell finishes instantly (you'll see the PID print right away) while
+training keeps running behind it. The process survives closing the tab,
+**as long as the Colab runtime itself isn't disconnected/recycled** (Pro's
+idle timeout is around 90 minutes of tab inactivity, so don't walk away
+for too long without checking in).
 
 ## Cell 7 — Check on it
 
