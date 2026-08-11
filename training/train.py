@@ -98,6 +98,12 @@ def main():
     ap.add_argument("--max_steps", type=int, default=-1,
                      help="Set to a small number (e.g. 20) for a smoke test "
                           "before committing to the full run.")
+    ap.add_argument("--train_file", default="train.jsonl",
+                     help="e.g. train_low_medium.jsonl for the base pass, "
+                          "train_high.jsonl for a later adapter pass.")
+    ap.add_argument("--eval_file", default="eval.jsonl",
+                     help="e.g. eval_low_medium.jsonl or eval_high.jsonl, "
+                          "matching --train_file.")
     args = ap.parse_args()
 
     # ---- 1. Load base model (downloads from HF on first run) ----
@@ -131,13 +137,13 @@ def main():
     )
 
     # ---- 3. Load + format dataset ----
-    train_path = find_dataset_file("train.jsonl")
+    train_path = find_dataset_file(args.train_file)
     print(f"Loading train set from {train_path}")
     train_rows = load_jsonl_messages(train_path)
 
     eval_rows = None
     try:
-        eval_path = find_dataset_file("eval.jsonl")
+        eval_path = find_dataset_file(args.eval_file)
         print(f"Loading eval set from {eval_path}")
         eval_rows = load_jsonl_messages(eval_path)
     except FileNotFoundError:
