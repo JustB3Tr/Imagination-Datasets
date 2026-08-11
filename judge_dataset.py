@@ -27,6 +27,7 @@ import random
 import re
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from pathlib import Path
@@ -93,22 +94,28 @@ def format_example_for_judge(ex: dict) -> str:
         content = m.get("content") or ""
         if m.get("tool_calls"):
             calls = "; ".join(
-                f"{tc['function']['name']}({tc['function']['arguments']})"
+                f"{tc.get('function', {}).get('name', '<missing>')}"
+                f"({tc.get('function', {}).get('arguments', '<missing>')})"
                 for tc in m["tool_calls"]
             )
             lines.append(f"[{role} -> tool_calls] {calls}")
         else:
+            if not isinstance(content, str):
+                content = json.dumps(content)
             lines.append(f"[{role}] {content[:3000]}")
     return "\n".join(lines)
 
 
-def load_stratified_sample(path: str, samples_per_bucket: int, seed: int) -> list[dict]:
+def load_stratified_sample(path: str, samples_per_bucket: int, seed: int,
+                            level_filter: str | None = None) -> list[dict]:
     by_bucket = defaultdict(list)
     with open(path) as f:
         for line in f:
             ex = json.loads(line)
             if ex["meta"]["domain"] == "identity":
                 continue  # trivially uniform by design, nothing to judge
+            if level_filter and ex["meta"]["level"] != level_filter:
+                continue
             key = (ex["meta"]["domain"], ex["meta"]["level"], ex["meta"]["mode"])
             by_bucket[key].append(ex)
 
@@ -125,30 +132,44 @@ def judge_one(client: OpenAI, ex: dict, max_calls) -> dict | None:
         return "CAPPED"
 
     formatted = format_example_for_judge(ex)
-    try:
-        extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You output only valid JSON, nothing else."},
-                {"role": "user", "content": JUDGE_INSTRUCTIONS + "\n\n---\n\n" + formatted},
-            ],
-            temperature=0.3,
-            max_tokens=600,
-            extra_body=extra_body,
-        )
-        raw = resp.choices[0].message.content.strip()
-        raw = re.sub(r"^<thought>.*?</thought>\s*", "", raw, count=1, flags=re.DOTALL)
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        verdict = json.loads(raw)
-        verdict["_meta"] = ex["meta"]
-        return verdict
-    except Exception as e:
-        print(f"  [skip] {ex['meta']['domain']}/{ex['meta']['level']}/{ex['meta']['mode']}: {e}", file=sys.stderr)
-        return None
+    extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}
+
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You output only valid JSON, nothing else."},
+                    {"role": "user", "content": JUDGE_INSTRUCTIONS + "\n\n---\n\n" + formatted},
+                ],
+                temperature=0.3,
+                max_tokens=1600,  # generous headroom for models with mandatory
+                                  # inline thinking (e.g. Gemma) that eats into
+                                  # the budget before producing the verdict
+                extra_body=extra_body,
+            )
+            raw = resp.choices[0].message.content.strip()
+            raw = re.sub(r"^<thought>.*?</thought>\s*", "", raw, count=1, flags=re.DOTALL)
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            verdict = json.loads(raw)
+            verdict["_meta"] = ex["meta"]
+            return verdict
+        except Exception as e:
+            is_rate_limit = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+            if is_rate_limit and attempt < max_retries:
+                # Free-tier per-minute quotas recover fast; back off and retry
+                # instead of permanently skipping a good example.
+                delay = 20 * (attempt + 1)
+                print(f"  [rate limited, retry {attempt+1}/{max_retries} in {delay}s] "
+                      f"{ex['meta']['domain']}/{ex['meta']['level']}/{ex['meta']['mode']}", file=sys.stderr)
+                time.sleep(delay)
+                continue
+            print(f"  [skip] {ex['meta']['domain']}/{ex['meta']['level']}/{ex['meta']['mode']}: {e}", file=sys.stderr)
+            return None
 
 
 def main():
@@ -160,13 +181,15 @@ def main():
     ap.add_argument("--workers", type=int, default=2,
                      help="Keep low for free-tier providers with per-minute quotas.")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--level", choices=["low", "medium", "high"], default=None,
+                     help="Judge only buckets at this reasoning level.")
     args = ap.parse_args()
 
     if not API_KEY:
         print("Set IMG2_API_KEY first.", file=sys.stderr)
         sys.exit(1)
 
-    sample = load_stratified_sample(args.input, args.samples_per_bucket, args.seed)
+    sample = load_stratified_sample(args.input, args.samples_per_bucket, args.seed, args.level)
     print(f"Judging {len(sample)} examples ({args.samples_per_bucket}/bucket) with {MODEL} ...")
 
     client = OpenAI(api_key=API_KEY, base_url=API_BASE)
@@ -176,7 +199,13 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(judge_one, client, ex, args.max_calls): ex for ex in sample}
             for fut in as_completed(futures):
-                verdict = fut.result()
+                ex = futures[fut]
+                try:
+                    verdict = fut.result()
+                except Exception as e:
+                    print(f"  [skip, judge crashed] {ex['meta']['domain']}/{ex['meta']['level']}/"
+                          f"{ex['meta']['mode']}: {e}", file=sys.stderr)
+                    continue
                 if verdict in (None, "CAPPED"):
                     continue
                 out_f.write(json.dumps(verdict) + "\n")

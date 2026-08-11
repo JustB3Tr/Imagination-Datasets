@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate SFT training examples for Imagination 2 Pro.
+Generate SFT training examples for Imagination 2.1 Pro.
 
 Works with any OpenAI-compatible API (DeepSeek, z.ai/GLM, etc). Set:
   export IMG2_API_KEY="..."
@@ -43,7 +43,9 @@ from schema_templates import (
 
 ROOT = Path(__file__).parent
 SEEDS_DIR = ROOT / "seeds"
-OUT_DIR = ROOT / "data" / "raw"
+# Override for test/comparison runs so they don't append into the same raw
+# files as real production generations (those get merged via dedup_and_split.py).
+OUT_DIR = Path(os.environ.get("IMG2_OUT_DIR", str(ROOT / "data" / "raw")))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 API_KEY = os.environ.get("IMG2_API_KEY")
@@ -56,6 +58,12 @@ MODEL = os.environ.get("IMG2_MODEL", "deepseek-chat")
 # whatever value the provider expects) to suppress that; passed through as
 # extra_body so it's a no-op for providers that don't recognize the field.
 REASONING_EFFORT = os.environ.get("IMG2_REASONING_EFFORT")
+
+# OpenRouter routes a given model through multiple backend providers, often
+# at different prices/quantization. Set IMG2_OPENROUTER_PROVIDER to pin a
+# specific one (e.g. "gmicloud" for their fp8 DeepSeek V4 Flash route)
+# instead of letting OpenRouter auto-select. No-op for non-OpenRouter bases.
+OPENROUTER_PROVIDER = os.environ.get("IMG2_OPENROUTER_PROVIDER")
 
 # $ per 1M tokens. Defaults are direct DeepSeek V4 Flash rates as of Aug 2026.
 # If you're on OpenRouter, override these (their DeepSeek route runs a bit
@@ -70,6 +78,10 @@ _spend_state = {"usd": 0.0, "capped": False}
 def _add_spend(prompt_tokens: int, completion_tokens: int) -> float:
     cost = (prompt_tokens / 1_000_000) * PRICE_INPUT_PER_1M + \
            (completion_tokens / 1_000_000) * PRICE_OUTPUT_PER_1M
+    return _add_actual_spend(cost)
+
+
+def _add_actual_spend(cost: float) -> float:
     with _spend_lock:
         _spend_state["usd"] += cost
         total = _spend_state["usd"]
@@ -178,6 +190,17 @@ def validate_example(example: dict, level: str) -> str | None:
     if messages[1].get("role") != "user":
         return f"second message role is '{messages[1].get('role')}', not user"
 
+    # A valid conversation only ever alternates assistant-with-tool_calls with
+    # its matching tool-result, ending in one final plain assistant message.
+    # Two assistant messages back to back should never happen -- when it does,
+    # it's usually the model narrating a fake tool call in prose ("I'll call
+    # file_search with a query...") instead of emitting real tool_calls, then
+    # putting what should be a tool-role result into a second assistant
+    # message. That teaches exactly the wrong tool-use pattern, so reject it.
+    for i in range(len(messages) - 1):
+        if messages[i].get("role") == "assistant" and messages[i + 1].get("role") == "assistant":
+            return "two consecutive assistant messages (likely narrated a fake tool call in prose)"
+
     last = messages[-1]
     if last.get("role") != "assistant":
         return f"last message role is '{last.get('role')}', not assistant (truncated conversation)"
@@ -201,15 +224,37 @@ def validate_example(example: dict, level: str) -> str | None:
     # function.name is unusable (nothing to dispatch) and json.loads happily
     # accepts it since it's still valid JSON, so this needs an explicit check.
     for i, m in enumerate(messages):
-        for call in m.get("tool_calls") or []:
+        calls = m.get("tool_calls") or []
+        # A message can carry multiple tool_calls (OpenAI-style parallel
+        # calls); each must have a matching "role": "tool" result somewhere
+        # in the next len(calls) messages, not necessarily at i+1 -- checking
+        # only messages[i+1] would reject every valid multi-call message
+        # after the first.
+        following_tool_ids = {
+            messages[j].get("tool_call_id")
+            for j in range(i + 1, min(i + 1 + len(calls), len(messages)))
+            if messages[j].get("role") == "tool"
+        }
+        for call in calls:
             call_id = call.get("id")
-            if not (call.get("function") or {}).get("name"):
+            fn = call.get("function") or {}
+            if not fn.get("name"):
                 return f"tool_call {call_id!r} is missing function.name"
-            nxt = messages[i + 1] if i + 1 < len(messages) else None
-            if not nxt or nxt.get("role") != "tool" or nxt.get("tool_call_id") != call_id:
+            if "arguments" not in fn:
+                return f"tool_call {call_id!r} is missing function.arguments"
+            if call_id not in following_tool_ids:
                 return f"tool_call {call_id!r} has no matching tool result message"
 
     return None
+
+
+# Retry temperatures for a single seed/domain/level/mode job. Some providers
+# occasionally emit a premature stop (finish_reason="stop" well under the
+# token budget) mid-JSON-string on long, nested-content generations -- not a
+# token-budget problem, a one-off model quirk. Lowering temperature on retry
+# reduces how often that recurs; each attempt claims its own call slot and
+# counts against max_spend/max_calls like any other call.
+RETRY_TEMPERATURES = [0.9, 0.7, 0.5]
 
 
 def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
@@ -221,60 +266,80 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
         total = _add_spend(in_tok, out_tok)
         return {"_dry_run": True, "est_total_usd": total}
 
-    if _over_cap(max_spend) or not _try_claim_call(max_calls):
-        return "CAPPED"  # cap already hit, don't make the call
+    last_err = None
+    for attempt, temperature in enumerate(RETRY_TEMPERATURES, start=1):
+        if _over_cap(max_spend) or not _try_claim_call(max_calls):
+            return "CAPPED"  # cap already hit, don't make the call
 
-    try:
-        if max_calls is not None:
-            with _call_lock:
-                call_num = _call_state["count"]
-            print(f"  [call {call_num}/{max_calls}] {domain}/{level}/{mode}", file=sys.stderr)
-        extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You output only valid JSON, nothing else."},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.9,
-            max_tokens=max_output_tokens(level, mode),
-            extra_body=extra_body,
-        )
-        usage = getattr(resp, "usage", None)
-        if usage:
-            total = _add_spend(usage.prompt_tokens, usage.completion_tokens)
-        else:
-            in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
-            total = _add_spend(in_tok, out_tok)
-        print(f"  [${total:6.3f} total] {domain}/{level}/{mode}", file=sys.stderr)
+        try:
+            if max_calls is not None:
+                with _call_lock:
+                    call_num = _call_state["count"]
+                retry_tag = f" (retry {attempt - 1})" if attempt > 1 else ""
+                print(f"  [call {call_num}/{max_calls}] {domain}/{level}/{mode}{retry_tag}", file=sys.stderr)
+            extra_body = {}
+            if REASONING_EFFORT:
+                extra_body["reasoning_effort"] = REASONING_EFFORT
+            if OPENROUTER_PROVIDER:
+                extra_body["provider"] = {"order": [OPENROUTER_PROVIDER], "allow_fallbacks": False}
+            resp = client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You output only valid JSON, nothing else."},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_output_tokens(level, mode),
+                extra_body=extra_body,
+            )
+            usage = getattr(resp, "usage", None)
+            # OpenRouter reports the real, authoritative per-call dollar cost as
+            # usage.cost (a non-standard field the openai SDK still exposes via
+            # its pydantic extra="allow" passthrough). Prefer that over our own
+            # price-per-token estimate when it's present -- it can't drift from
+            # whatever OpenRouter actually billed, unlike a hardcoded rate that
+            # might be stale for a specific pinned provider/route. Direct
+            # provider APIs (e.g. DeepSeek's own endpoint) don't return this
+            # field, so this falls back to the token-based estimate for those.
+            actual_cost = getattr(usage, "cost", None) if usage else None
+            if actual_cost is not None:
+                total = _add_actual_spend(float(actual_cost))
+            elif usage:
+                total = _add_spend(usage.prompt_tokens, usage.completion_tokens)
+            else:
+                in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
+                total = _add_spend(in_tok, out_tok)
+            print(f"  [${total:6.3f} total] {domain}/{level}/{mode}", file=sys.stderr)
 
-        raw = resp.choices[0].message.content.strip()
-        # Some providers (e.g. Gemma via the Gemini API) inline their chain-of-
-        # thought directly in the visible content as a leading <thought>...
-        # </thought> block instead of hiding it -- strip it before parsing.
-        # No-op for providers that never produce this pattern.
-        raw = re.sub(r"^<thought>.*?</thought>\s*", "", raw, count=1, flags=re.DOTALL)
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        example = json.loads(raw)
+            raw = resp.choices[0].message.content.strip()
+            # Some providers (e.g. Gemma via the Gemini API) inline their chain-of-
+            # thought directly in the visible content as a leading <thought>...
+            # </thought> block instead of hiding it -- strip it before parsing.
+            # No-op for providers that never produce this pattern.
+            raw = re.sub(r"^<thought>.*?</thought>\s*", "", raw, count=1, flags=re.DOTALL)
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            example = json.loads(raw)
 
-        invalid_reason = validate_example(example, level)
-        if invalid_reason:
-            print(f"  [skip] {domain}/{level}/{mode}: {invalid_reason}", file=sys.stderr)
-            return None
+            invalid_reason = validate_example(example, level)
+            if invalid_reason:
+                raise ValueError(invalid_reason)
 
-        example["meta"] = {
-            "domain": domain,
-            "level": level,
-            "mode": mode,
-            "seed_task": seed_task,
-        }
-        return example
-    except Exception as e:
-        print(f"  [skip] {domain}/{level}/{mode}: {e}", file=sys.stderr)
-        return None
+            example["meta"] = {
+                "domain": domain,
+                "level": level,
+                "mode": mode,
+                "seed_task": seed_task,
+            }
+            return example
+        except Exception as e:
+            last_err = e
+            continue
+
+    print(f"  [skip] {domain}/{level}/{mode}: {last_err}", file=sys.stderr)
+    return None
 
 
 def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: int,

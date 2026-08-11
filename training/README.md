@@ -1,4 +1,4 @@
-# LoRA training — Imagination 2 Pro
+# LoRA training — Imagination 2.1 Pro
 
 ## 1. Rent the GPU
 

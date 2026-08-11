@@ -1,4 +1,4 @@
-# Imagination 2 Pro — SFT data pipeline
+# Imagination 2.1 Pro — SFT data pipeline
 
 Real, runnable pipeline for generating the QLoRA finetuning dataset:
 3 domains (agentic_tool_use, subagent_orchestration, general_code) x 3
@@ -87,7 +87,7 @@ python generate_identity.py
 
 Zero-cost, no API calls. Generates a small set of self-description
 examples (name, company, founder, how it was trained) so the model
-reliably identifies as Imagination 2 Pro instead of drifting. Deterministic
+reliably identifies as Imagination 2.1 Pro instead of drifting. Deterministic
 question x canonical-answer pairs rather than LLM-generated, since identity
 facts need to be learned consistently, not varied for diversity like task
 examples are. Writes `data/raw/identity__<level>.jsonl`.
