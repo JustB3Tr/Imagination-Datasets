@@ -80,7 +80,11 @@ blocking for the full training run instead of returning immediately.
 `subprocess.Popen` sidesteps that entirely and returns control right away:
 
 ```python
-import subprocess
+import os, subprocess
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)  # train.py normally creates this itself,
+                                          # but we're opening the log file before
+                                          # the script even starts
 
 log_path = f"{OUTPUT_DIR}/train.log"
 proc = subprocess.Popen(
