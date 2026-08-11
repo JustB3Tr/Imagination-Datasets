@@ -251,6 +251,16 @@ def validate_example(example: dict, level: str) -> str | None:
                 # at train time (PyArrow needs one consistent struct schema
                 # across every message, and a str-vs-dict split fails that).
                 return f"tool_call {call_id!r} has non-string function.arguments ({type(fn['arguments']).__name__})"
+            try:
+                if not isinstance(json.loads(fn["arguments"]), dict):
+                    return f"tool_call {call_id!r} function.arguments doesn't decode to a JSON object"
+            except json.JSONDecodeError:
+                # A string that isn't itself valid JSON -- usually an
+                # under-escaped backslash inside a regex/command/path (e.g.
+                # \K written instead of \\K). Downstream chat-template
+                # rendering needs to json.loads this back into a dict, so it
+                # has to actually be valid JSON, not just any string.
+                return f"tool_call {call_id!r} function.arguments isn't valid JSON"
             if call_id not in following_tool_ids:
                 return f"tool_call {call_id!r} has no matching tool result message"
 
