@@ -5,4 +5,5 @@ data/test_free_compare/
 data/test_paid_compare/
 data/dedup_report.json
 judge_results*.jsonl
+eval_artifacts/
 .env
