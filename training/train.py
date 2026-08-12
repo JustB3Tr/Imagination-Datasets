@@ -349,6 +349,19 @@ def main():
         save_total_limit=3,
         eval_strategy="steps" if eval_ds is not None else "no",
         eval_steps=args.eval_steps if eval_ds is not None else None,
+        # Without this, the trainer just keeps whatever checkpoint happens to
+        # be last, which is NOT the same as the best one -- a real run on
+        # this dataset bottomed out on eval_loss around 1 epoch in (~step
+        # 300) and then overfit for the remaining 2 epochs, ending 24% worse
+        # on eval_loss than the best point it had already passed. With this
+        # set, the trainer tracks eval_loss across every eval_steps interval
+        # and reloads the best checkpoint's weights at the very end of
+        # training, before save_pretrained() writes lora_adapter_final --
+        # and it protects that checkpoint from save_total_limit's rotation
+        # even if it's no longer among the most recent saves.
+        load_best_model_at_end=eval_ds is not None,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         report_to="none",
         dataset_text_field="text",
         max_seq_length=args.max_seq_length,
