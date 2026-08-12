@@ -315,8 +315,16 @@ def main():
 
     # ---- 4. Resume from checkpoint if one exists (spot instances can die) ----
     resume_from = None
-    existing_checkpoints = sorted(glob.glob(os.path.join(args.output_dir, "checkpoint-*")))
+    existing_checkpoints = glob.glob(os.path.join(args.output_dir, "checkpoint-*"))
     if existing_checkpoints:
+        # Sort numerically by step count, not lexicographically -- plain
+        # string sort would rank "checkpoint-50" after "checkpoint-100" and
+        # "checkpoint-150" (since '5' > '1' as the first differing char),
+        # so with save_total_limit rotation there's a real window right
+        # after crossing a digit-length boundary (e.g. just after step 150
+        # saves, {50, 100, 150} briefly coexist) where the old string sort
+        # would silently resume from the wrong, older checkpoint.
+        existing_checkpoints.sort(key=lambda p: int(p.rsplit("-", 1)[-1]))
         resume_from = existing_checkpoints[-1]
         print(f"Found existing checkpoint, resuming from {resume_from}")
 
