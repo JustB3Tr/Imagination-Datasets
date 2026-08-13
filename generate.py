@@ -189,6 +189,9 @@ def validate_example(example: dict, level: str) -> str | None:
         return f"first message role is '{messages[0].get('role')}', not system"
     if messages[1].get("role") != "user":
         return f"second message role is '{messages[1].get('role')}', not user"
+    for m in messages:
+        if m.get("role") not in ("system", "user", "assistant", "tool"):
+            return f"message has invalid role {m.get('role')!r}"
 
     # A valid conversation only ever alternates assistant-with-tool_calls with
     # its matching tool-result, ending in one final plain assistant message.
@@ -200,6 +203,15 @@ def validate_example(example: dict, level: str) -> str | None:
     for i in range(len(messages) - 1):
         if messages[i].get("role") == "assistant" and messages[i + 1].get("role") == "assistant":
             return "two consecutive assistant messages (likely narrated a fake tool call in prose)"
+
+    # A message with neither content nor tool_calls renders as nothing --
+    # the chat template does unconditional string concatenation on content
+    # for any message not in its tool_calls branch, so a None/missing
+    # content with no tool_calls crashes template rendering at train time
+    # instead of just being a wasted turn.
+    for m in messages:
+        if not m.get("content") and not m.get("tool_calls"):
+            return f"message with role {m.get('role')!r} has neither content nor tool_calls"
 
     last = messages[-1]
     if last.get("role") != "assistant":
