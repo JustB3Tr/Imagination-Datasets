@@ -7,7 +7,7 @@ inconsistent signal about what "low/medium/high" and "orchestrator vs
 subagent" actually mean.
 """
 
-LEVELS = ["low", "medium", "high"]
+LEVELS = ["low", "medium", "high", "max"]
 DOMAINS = ["agentic_tool_use", "subagent_orchestration", "general_code"]
 
 # Rough output length budget per reasoning level. Used both to steer the
@@ -24,6 +24,10 @@ MAX_TOKENS_BY_LEVEL = {
                       # task (15.9k chars written, cut off mid-sentence).
                       # Output tokens are cheap ($0.224/1M on this route), so
                       # the safety margin costs essentially nothing.
+    "max": 9000,      # two structured alternatives (not one) plus a complete
+                      # answer -- calibrated empirically against real
+                      # deepseek-chat calls before any real generation spend,
+                      # see PLAN.md.
 }
 
 LEVEL_INSTRUCTIONS = {
@@ -48,17 +52,43 @@ LEVEL_INSTRUCTIONS = {
         "(2-5 sentences) covering the key decision points, then the answer."
     ),
     "high": (
-        "Before calling any tool or taking any "
-        "action, include a thorough <think>...</think> block written as "
-        "genuine upfront deliberation -- NOT a summary of what you already "
-        "did or are about to report. Inside it: (1) restate the core "
-        "problem in your own words, (2) name ONE specific, concrete "
-        "alternative approach and give a specific technical reason it was "
-        "rejected (not a generic dismissal like 'this could also work but "
-        "is more complex'), (3) explain concretely why the chosen approach "
-        "is better for this exact situation. After the think block, write "
-        "a COMPLETE final answer -- finish any code you start, do not stop "
-        "partway through."
+        "Before calling any tool or taking any action, include a thorough "
+        "<think>...</think> block using EXACTLY this structure, with these "
+        "four labels verbatim on their own lines:\n"
+        "Problem: <restate the core problem in your own words, 1-2 sentences>\n"
+        "Alternative considered: <name ONE specific, concrete alternative "
+        "approach -- a real technique, library, or method, not a vague "
+        "restatement>\n"
+        "Rejected because: <ONE specific technical reason this alternative "
+        "is worse for THIS situation -- not a generic dismissal like 'more "
+        "complex' or 'could also work'>\n"
+        "Chosen because: <concretely explain why the chosen approach wins "
+        "here>\n"
+        "Do not skip any of the four labeled lines. After the think block, "
+        "write a COMPLETE final answer -- finish any code you start, do not "
+        "stop partway through."
+    ),
+    "max": (
+        "This is maximum reasoning effort. Before calling any tool or "
+        "taking any action, include an exceptionally thorough "
+        "<think>...</think> block using EXACTLY this structure, with these "
+        "labels verbatim on their own lines:\n"
+        "Problem: <restate the problem thoroughly, including any "
+        "non-obvious edge cases or constraints>\n"
+        "Alternative 1 considered: <a first concrete, real alternative "
+        "approach>\n"
+        "Rejected because: <specific technical reason>\n"
+        "Alternative 2 considered: <a SECOND concrete alternative -- must "
+        "be genuinely different from Alternative 1, not a variation of the "
+        "same idea>\n"
+        "Rejected because: <specific technical reason>\n"
+        "Chosen approach: <state the approach actually being taken>\n"
+        "Why this wins: <concretely explain why the chosen approach beats "
+        "BOTH alternatives for this exact situation, referencing specific "
+        "tradeoffs>\n"
+        "Do not skip any labeled line. After the think block, write a "
+        "COMPLETE final answer -- finish any code you start, do not stop "
+        "partway through, and verify correctness before concluding."
     ),
 }
 
@@ -137,8 +167,8 @@ Rules:
   immediately followed by a "role": "tool" result message -- never two
   "role": "assistant" messages back to back.
 - the final assistant message must NOT call a tool, it must contain the final answer.
-- if reasoning_effort is medium or high, the final assistant message's content
-  must start with a <think>...</think> block before the answer.
+- if reasoning_effort is medium, high, or max, the final assistant message's
+  content must start with a <think>...</think> block before the answer.
 - if reasoning_effort is low, do not include a <think> block anywhere.
 - in ORCHESTRATOR mode, tool calls must ONLY use run_subagent, called one at
   a time (never multiple tool_calls in the same message), and the "content"

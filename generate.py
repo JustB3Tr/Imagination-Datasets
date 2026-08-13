@@ -224,12 +224,43 @@ def validate_example(example: dict, level: str) -> str | None:
 
     if level == "low" and "<think>" in content:
         return "level is low but final answer contains a <think> block"
-    if level in ("medium", "high"):
+    if level in ("medium", "high", "max"):
         if not content.lstrip().startswith("<think>"):
             return f"level is {level} but final answer doesn't start with a <think> block"
-        after_think = re.sub(r"^<think>.*?</think>", "", content.lstrip(), count=1, flags=re.DOTALL).strip()
+        think_match = re.match(r"^<think>(.*?)</think>", content.lstrip(), flags=re.DOTALL)
+        if not think_match:
+            return f"level is {level} but <think> block is never closed with </think> (truncated)"
+        after_think = content.lstrip()[think_match.end():].strip()
         if len(after_think) < 10:
             return f"level is {level} but there's no real answer after the <think> block (truncated)"
+        # high/max use a labeled structure (not just open prose) -- an LLM-
+        # judge audit found ~39% of open-prose "high" examples silently
+        # skipped naming a real alternative approach despite the prose
+        # instruction saying to; a calibration test comparing prose vs this
+        # labeled scaffold on identical seeds found 100% label compliance
+        # for the scaffold vs ~12-50% for prose (see PLAN.md). Enforcing the
+        # labels here means a miss triggers a retry instead of silently
+        # shipping a non-compliant example. Labels must start a line (not
+        # just appear as a substring anywhere, e.g. inside an example or
+        # code snippet the model quotes) -- MULTILINE anchors "^" to each
+        # line start, not just the string start.
+        think_text = think_match.group(1)
+        if level == "high":
+            required = ["Problem:", "Alternative considered:", "Rejected because:", "Chosen because:"]
+            missing = [r for r in required
+                       if not re.search(rf"^{re.escape(r)}", think_text, flags=re.MULTILINE)]
+            if missing:
+                return f"level is high but <think> block is missing required label(s): {missing}"
+        if level == "max":
+            required = ["Problem:", "Alternative 1 considered:", "Alternative 2 considered:",
+                        "Chosen approach:", "Why this wins:"]
+            missing = [r for r in required
+                       if not re.search(rf"^{re.escape(r)}", think_text, flags=re.MULTILINE)]
+            if missing:
+                return f"level is max but <think> block is missing required label(s): {missing}"
+            n_rejected = len(re.findall(r"^Rejected because:", think_text, flags=re.MULTILINE))
+            if n_rejected < 2:
+                return "level is max but <think> block doesn't reject both alternatives"
 
     # every tool_call must be immediately followed by its matching tool result,
     # and must actually name a function -- a tool_call with arguments but no
