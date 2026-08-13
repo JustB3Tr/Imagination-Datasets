@@ -116,11 +116,29 @@ def normalize_message(m: dict) -> dict:
     "ArrowInvalid: cannot mix struct and non-struct, non-null values" --
     normalizing every message to the same key set/types here fixes it
     without needing to regenerate the affected rows."""
+    role = m.get("role")
+    if role not in ("system", "user", "assistant", "tool"):
+        # e.g. a stray "tool_calls" role on one bad row -- should always be
+        # "assistant" in practice (nothing else emits tool_calls), and an
+        # unrecognized role falls into the chat template's generic catch-all
+        # branch, which does unconditional content concatenation same as the
+        # None-content-no-tool_calls case below.
+        role = "assistant"
+
     content = m.get("content")
     if content is None and "message" in m:
         content = m.get("message")  # rare typo'd field from one bad row
-    out = {"role": m.get("role"), "content": content}
     tool_calls = m.get("tool_calls")
+    if content is None and not tool_calls:
+        # A message with neither content nor tool_calls can't be rendered --
+        # the chat template does `message.content` string concatenation
+        # unconditionally for any assistant/user/system message that isn't
+        # in the tool_calls branch, and None + str crashes with
+        # "can only concatenate str (not 'NoneType') to str". None content
+        # is only valid when tool_calls is present (the template's
+        # tool_calls branch explicitly guards for that case).
+        content = ""
+    out = {"role": role, "content": content}
     if tool_calls:
         fixed_calls = []
         for tc in tool_calls:
