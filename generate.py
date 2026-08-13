@@ -224,12 +224,34 @@ def validate_example(example: dict, level: str) -> str | None:
 
     if level == "low" and "<think>" in content:
         return "level is low but final answer contains a <think> block"
-    if level in ("medium", "high"):
+    if level in ("medium", "high", "max"):
         if not content.lstrip().startswith("<think>"):
             return f"level is {level} but final answer doesn't start with a <think> block"
+        think_match = re.match(r"^<think>(.*?)</think>", content.lstrip(), flags=re.DOTALL)
         after_think = re.sub(r"^<think>.*?</think>", "", content.lstrip(), count=1, flags=re.DOTALL).strip()
         if len(after_think) < 10:
             return f"level is {level} but there's no real answer after the <think> block (truncated)"
+        # high/max use a labeled structure (not just open prose) -- an LLM-
+        # judge audit found ~39% of open-prose "high" examples silently
+        # skipped naming a real alternative approach despite the prose
+        # instruction saying to; a calibration test comparing prose vs this
+        # labeled scaffold on identical seeds found 100% label compliance
+        # for the scaffold vs ~12-50% for prose (see PLAN.md). Enforcing the
+        # labels here means a miss triggers a retry instead of silently
+        # shipping a non-compliant example.
+        if level == "high" and think_match:
+            required = ["Problem:", "Alternative considered:", "Rejected because:", "Chosen because:"]
+            missing = [r for r in required if r not in think_match.group(1)]
+            if missing:
+                return f"level is high but <think> block is missing required label(s): {missing}"
+        if level == "max" and think_match:
+            required = ["Problem:", "Alternative 1 considered:", "Alternative 2 considered:",
+                        "Chosen approach:", "Why this wins:"]
+            missing = [r for r in required if r not in think_match.group(1)]
+            if missing:
+                return f"level is max but <think> block is missing required label(s): {missing}"
+            if think_match.group(1).count("Rejected because:") < 2:
+                return "level is max but <think> block doesn't reject both alternatives"
 
     # every tool_call must be immediately followed by its matching tool result,
     # and must actually name a function -- a tool_call with arguments but no
