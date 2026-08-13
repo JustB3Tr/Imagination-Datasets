@@ -201,6 +201,12 @@ def main():
     ap.add_argument("--lora_alpha", type=int, default=32)
     ap.add_argument("--save_steps", type=int, default=50)
     ap.add_argument("--eval_steps", type=int, default=50)
+    ap.add_argument("--save_total_limit", type=int, default=None,
+                     help="Max checkpoints to keep (oldest deleted first). "
+                          "Default keeps ALL checkpoints -- fine if you have "
+                          "the disk space (each is a few GB), and means "
+                          "nothing is ever lost to rotation. Pass a number "
+                          "(e.g. 3) to cap it if space is tight.")
     ap.add_argument("--max_steps", type=int, default=-1,
                      help="Set to a small number (e.g. 20) for a smoke test "
                           "before committing to the full run.")
@@ -346,7 +352,7 @@ def main():
         logging_steps=5,
         save_strategy="steps",
         save_steps=args.save_steps,
-        save_total_limit=3,
+        save_total_limit=args.save_total_limit,
         eval_strategy="steps" if eval_ds is not None else "no",
         eval_steps=args.eval_steps if eval_ds is not None else None,
         # Without this, the trainer just keeps whatever checkpoint happens to
