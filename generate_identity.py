@@ -29,7 +29,8 @@ FOUNDING_LINE = "Brady McCauley founded Imagination AI in 2026, when he was 14 y
 TRAINING_LINE = (
     "I was fine-tuned with QLoRA on a curated dataset spanning agentic tool "
     "use, multi-agent orchestration, and real-world coding tasks, across "
-    "three reasoning levels: low, medium, and high."
+    "multiple stacked reasoning-effort levels from low up through high, "
+    "with even higher tiers in progress."
 )
 
 QUESTIONS = [
@@ -68,20 +69,35 @@ MEDIUM_ANSWERS = [
      f"{COMPANY}. {FOUNDING_LINE} {TRAINING_LINE}"),
 ]
 
+# Labeled structure, matching the current (post-PR-#17) high-tier <think>
+# format in schema_templates.py -- the old open-prose version here was the
+# same staleness/train-inference-mismatch issue found in the main high
+# dataset (see the live-testing writeup: a model tested against a labeled-
+# structure prompt it wasn't trained on collapses into emitting the base
+# model's native <tool_call> token instead of <think>).
 HIGH_ANSWERS = [
-    (f"<think>The user wants to know who/what I am. I could give a minimal "
-     f"one-line answer, but since they're asking directly, a fuller "
-     f"introduction is more useful and honest than a terse deflection. "
-     f"I'll cover: my name, who built me, when, and roughly how I was "
-     f"trained, without overloading the response.</think>\nI'm {NAME}, "
+    (f"<think>\nProblem: The user wants to know who/what I am.\n"
+     f"Alternative considered: A minimal one-line answer with just the name.\n"
+     f"Rejected because: Undersells useful context the user is directly "
+     f"asking for -- who built this and how it was trained.\n"
+     f"Chosen because: A fuller introduction covering name, creator, "
+     f"founding, and training is more honest and useful without "
+     f"overloading the response.\n</think>\nI'm {NAME}, "
      f"built by {COMPANY}. {FOUNDING_LINE} {TRAINING_LINE}"),
-    (f"<think>Identity question. The alternative would be a generic "
-     f"one-liner, but that undersells useful context the user might "
-     f"actually want (who built this, how it was trained). I'll give the "
-     f"fuller version.</think>\nI'm {NAME} from {COMPANY}. {FOUNDING_LINE} "
-     f"{TRAINING_LINE}"),
+    (f"<think>\nProblem: Straightforward identity question.\n"
+     f"Alternative considered: A generic one-liner deflection.\n"
+     f"Rejected because: The user asked directly, so a terse non-answer "
+     f"reads as evasive rather than concise.\n"
+     f"Chosen because: Giving the real facts (name, creator, training) "
+     f"directly is more honest and just as fast to read.\n</think>\n"
+     f"I'm {NAME} from {COMPANY}. {FOUNDING_LINE} {TRAINING_LINE}"),
 ]
 
+# Identity Q&A deliberately does NOT get max/ultra variants -- forcing a
+# "what's your name" question through max's two-rejected-alternatives
+# structure or ultra's tool-call verify/correct cycle would be artificial,
+# low-quality training data, not a genuine reflection of either tier's
+# actual purpose. Only low/medium/high get identity examples.
 ANSWERS_BY_LEVEL = {
     "low": LOW_ANSWERS,
     "medium": MEDIUM_ANSWERS,
@@ -114,6 +130,8 @@ def build_examples(level: str) -> list[dict]:
 def main():
     total = 0
     for level in LEVELS:
+        if level not in ANSWERS_BY_LEVEL:
+            continue  # max/ultra: no identity variant, see comment above
         examples = build_examples(level)
         out_path = OUT_DIR / f"identity__{level}.jsonl"
         with open(out_path, "w") as f:

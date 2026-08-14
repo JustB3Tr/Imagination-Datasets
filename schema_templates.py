@@ -7,8 +7,14 @@ inconsistent signal about what "low/medium/high" and "orchestrator vs
 subagent" actually mean.
 """
 
-LEVELS = ["low", "medium", "high", "max"]
+LEVELS = ["low", "medium", "high", "max", "ultra"]
 DOMAINS = ["agentic_tool_use", "subagent_orchestration", "general_code"]
+
+# ultra is scoped to the two domains where a verify-and-iterate loop
+# actually matters -- subagent_orchestration's persistence is already
+# expressed via run_subagent delegation chains, a distinct enough pattern
+# that it doesn't need its own ultra treatment (see PLAN.md "Open decisions").
+ULTRA_DOMAINS = ["agentic_tool_use", "general_code"]
 
 # Rough output length budget per reasoning level. Used both to steer the
 # generator model and to cap how much you pay for per example.
@@ -28,6 +34,14 @@ MAX_TOKENS_BY_LEVEL = {
                       # answer -- calibrated empirically against real
                       # deepseek-chat calls before any real generation spend,
                       # see PLAN.md.
+    "ultra": 18000,   # UNCALIBRATED starting point (PLAN.md's 16k-20k
+                      # estimate, midpoint) -- multiple tool-call round
+                      # trips including a mandatory failure+correction cycle
+                      # eat far more tokens than a single structured answer.
+                      # high's real history: 2000 and 3200 both silently
+                      # truncated before 6000 proved sufficient -- do NOT
+                      # skip the small calibration batch (see PLAN.md step 4)
+                      # before spending real money at this number.
 }
 
 LEVEL_INSTRUCTIONS = {
@@ -89,6 +103,24 @@ LEVEL_INSTRUCTIONS = {
         "Do not skip any labeled line. After the think block, write a "
         "COMPLETE final answer -- finish any code you start, do not stop "
         "partway through, and verify correctness before concluding."
+    ),
+    "ultra": (
+        "This is maximum persistence effort. Before acting, include a "
+        "<think>...</think> block using EXACTLY this structure, with these "
+        "three labels verbatim on their own lines:\n"
+        "Problem: <restate the core problem, 1-2 sentences>\n"
+        "Plan: <the concrete steps you will take>\n"
+        "Verification strategy: <specifically how you will check your work "
+        "using real tool calls -- running tests, re-reading output, "
+        "checking actual state -- not assumption>\n"
+        "Do not skip any of the three labeled lines. After the think block, "
+        "do the work using real tool calls. This conversation MUST include "
+        "at least one point where a check reveals something wrong or "
+        "incomplete -- a failing test, unexpected output, a stale "
+        "assumption -- and you notice it and correct it before finishing. "
+        "A clean one-pass success with no self-correction is NOT a valid "
+        "response at this tier. Keep working and verifying until the task "
+        "is actually, verifiably finished, not just apparently finished."
     ),
 }
 

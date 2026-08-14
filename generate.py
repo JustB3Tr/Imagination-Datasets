@@ -35,6 +35,7 @@ from schema_templates import (
     DOMAINS,
     LEVELS,
     MAX_TOKENS_BY_LEVEL,
+    ULTRA_DOMAINS,
     EXAMPLE_JSON_INSTRUCTIONS,
     RUN_SUBAGENT_TOOL_SCHEMA,
     build_system_prompt,
@@ -120,14 +121,65 @@ def _try_claim_call(max_calls: int | None) -> bool:
 # trained without a dedicated fourth dataset.
 SUBAGENT_VARIANT_RATE = 0.35
 
+# Fraction of high/max direct-or-subagent-mode examples generated as a
+# "no good tool applies" negative -- live testing against the deployed
+# low+medium+high model found it collapses into emitting the base model's
+# native <tool_call> token instead of the trained <think> convention when a
+# real request has no relevant tool available, almost certainly because
+# every prior generated example invents 1-2 tools regardless of whether the
+# task needs one (see build_prompt below), so the model never saw a genuine
+# "just answer, don't call anything" scenario at these effort levels. NOT
+# applied to "ultra" (its whole point is tool-call-heavy verify/iterate --
+# a no-tool scenario doesn't fit that tier) or "orchestrator" mode (which by
+# definition always delegates via run_subagent).
+NO_TOOL_VARIANT_RATE = 0.2
+NO_TOOL_LEVELS = ("high", "max")
+
 
 def load_seeds(domain: str) -> list[str]:
     with open(SEEDS_DIR / f"{domain}.json") as f:
         return json.load(f)
 
 
-def build_prompt(domain: str, level: str, seed_task: str, mode: str) -> tuple[str, str]:
+def build_prompt(domain: str, level: str, seed_task: str, mode: str, no_tool: bool = False) -> tuple[str, str]:
     system_prompt = build_system_prompt(mode, level)
+
+    if mode == "orchestrator":
+        tool_instructions = (
+            f"The ONLY tool you may call is run_subagent, schema: "
+            f"{json.dumps(RUN_SUBAGENT_TOOL_SCHEMA)}. Do not invent or call any other tools."
+        )
+    elif no_tool:
+        tool_instructions = (
+            "This specific example must NOT involve any tool call. Pick ONE of "
+            "these two patterns (vary which one across different examples):\n"
+            "(a) Don't mention any tool schema at all -- the task is answerable "
+            "from reasoning/knowledge alone, so the assistant just thinks (if "
+            "the effort level calls for it) and answers directly.\n"
+            "(b) Invent exactly ONE tool that is clearly plausible for this "
+            "domain but genuinely irrelevant to THIS specific task -- the "
+            "assistant must recognize it doesn't apply and answer directly "
+            "WITHOUT calling it, not force a call to it anyway.\n"
+            "The final assistant message must contain no tool_calls at all."
+        )
+    else:
+        tool_instructions = (
+            "Invent 1-2 realistic tools appropriate to the task (e.g. fetch, shell, "
+            "file_search, sql_query) with sensible JSON parameter schemas."
+        )
+
+    ultra_structural_note = ""
+    if level == "ultra":
+        ultra_structural_note = """
+STRUCTURAL REQUIREMENT for this tier: the conversation MUST include at
+least one tool call whose result reveals something wrong or incomplete
+(a failing test, an error, unexpected/incorrect output, a stale
+assumption disproven by what the tool actually returned) -- and the
+assistant must notice it and take a further action to investigate or fix
+it before the final answer. A conversation where every tool call succeeds
+cleanly on the first try, with no detected problem, is NOT a valid example
+of this tier and will be rejected -- don't generate one."""
+
     generator_instructions = f"""
 You are generating ONE synthetic training example for finetuning a coding/
 agentic assistant. The example should teach the DOMAIN "{domain}" at
@@ -139,11 +191,8 @@ and specific with real details): "{seed_task}"
 The system prompt for this example must be exactly:
 \"\"\"{system_prompt}\"\"\"
 
-{f'The ONLY tool you may call is run_subagent, schema: '
-  f'{json.dumps(RUN_SUBAGENT_TOOL_SCHEMA)}. Do not invent or call any other tools.'
-  if mode == 'orchestrator' else
-  'Invent 1-2 realistic tools appropriate to the task (e.g. fetch, shell, '
-  'file_search, sql_query) with sensible JSON parameter schemas.'}
+{tool_instructions}
+{ultra_structural_note}
 
 {EXAMPLE_JSON_INSTRUCTIONS}
 """.strip()
@@ -261,6 +310,37 @@ def validate_example(example: dict, level: str) -> str | None:
             n_rejected = len(re.findall(r"^Rejected because:", think_text, flags=re.MULTILINE))
             if n_rejected < 2:
                 return "level is max but <think> block doesn't reject both alternatives"
+        if level == "ultra":
+            required = ["Problem:", "Plan:", "Verification strategy:"]
+            missing = [r for r in required
+                       if not re.search(rf"^{re.escape(r)}", think_text, flags=re.MULTILINE)]
+            if missing:
+                return f"level is ultra but <think> block is missing required label(s): {missing}"
+
+    if level == "ultra":
+        # Structural requirement (see PLAN.md): a clean one-pass success with
+        # no self-correction isn't a valid ultra example -- the whole point
+        # of this tier is verify-then-fix, not just verify. Heuristic: at
+        # least 2 tool calls (one that surfaces a problem, one that responds
+        # to it), and at least one tool-role result whose content looks
+        # failure/error-shaped, with the conversation continuing past it
+        # rather than ending immediately after.
+        tool_call_count = sum(len(m.get("tool_calls") or []) for m in messages)
+        if tool_call_count < 2:
+            return "level is ultra but has fewer than 2 tool calls (no room for a failure+correction cycle)"
+        failure_markers = re.compile(
+            r"\b(error|exception|traceback|fail(ed|ure)?|incorrect|unexpected|"
+            r"assertionerror|0 passed|not found|mismatch|invalid)\b", re.IGNORECASE,
+        )
+        flagged_indices = [
+            i for i, m in enumerate(messages)
+            if m.get("role") == "tool" and failure_markers.search(str(m.get("content") or ""))
+        ]
+        if not flagged_indices:
+            return "level is ultra but no tool result looks like it surfaced a failure/problem"
+        last_flagged = flagged_indices[-1]
+        if last_flagged >= len(messages) - 2:
+            return "level is ultra but the conversation ends right after the flagged failure (no visible correction)"
 
     # every tool_call must be immediately followed by its matching tool result,
     # and must actually name a function -- a tool_call with arguments but no
@@ -320,8 +400,8 @@ RETRY_TEMPERATURES = [0.9, 0.7, 0.5]
 
 
 def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
-             max_spend: float, max_calls: int | None, dry_run: bool) -> dict | str | None:
-    system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode)
+             max_spend: float, max_calls: int | None, dry_run: bool, no_tool: bool = False) -> dict | str | None:
+    system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode, no_tool=no_tool)
 
     if dry_run:
         in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
@@ -394,6 +474,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
                 "level": level,
                 "mode": mode,
                 "seed_task": seed_task,
+                "no_tool_variant": no_tool,
             }
             return example
         except Exception as e:
@@ -410,12 +491,16 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
     mode = mode_for_domain(domain)
     out_path = OUT_DIR / f"{domain}__{level}.jsonl"
 
+    def roll_no_tool(job_mode: str) -> bool:
+        return (level in NO_TOOL_LEVELS and job_mode != "orchestrator"
+                and random.random() < NO_TOOL_VARIANT_RATE)
+
     jobs = []
     for seed in seeds:
         for _ in range(variants):
-            jobs.append((domain, level, seed, mode))
+            jobs.append((domain, level, seed, mode, roll_no_tool(mode)))
             if mode != "subagent" and random.random() < SUBAGENT_VARIANT_RATE:
-                jobs.append((domain, level, seed, "subagent"))
+                jobs.append((domain, level, seed, "subagent", roll_no_tool("subagent")))
 
     print(f"[{domain}/{level}] {len(jobs)} calls queued -> {out_path}")
     written = 0
@@ -425,8 +510,8 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(call_api, client, d, lv, s, m, max_spend, max_calls, dry_run): (d, lv, s, m)
-                for (d, lv, s, m) in jobs
+                pool.submit(call_api, client, d, lv, s, m, max_spend, max_calls, dry_run, nt): (d, lv, s, m)
+                for (d, lv, s, m, nt) in jobs
             }
             for fut in as_completed(futures):
                 example = fut.result()
@@ -490,11 +575,18 @@ def main():
 
     client = OpenAI(api_key=API_KEY or "dry-run", base_url=API_BASE)
 
+    if args.level == "ultra" and args.domain and args.domain not in ULTRA_DOMAINS:
+        print(f"'ultra' is only generated for {ULTRA_DOMAINS} (see PLAN.md) -- "
+              f"'{args.domain}' isn't one of them.", file=sys.stderr)
+        sys.exit(1)
+
     total = 0
     t0 = time.time()
     if args.all:
         for domain in DOMAINS:
             for level in LEVELS:
+                if level == "ultra" and domain not in ULTRA_DOMAINS:
+                    continue
                 total += run_combo(client, domain, level, args.variants, args.workers,
                                     args.max_spend, args.max_calls, args.dry_run)
     else:
