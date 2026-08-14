@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { authHeaderValue } from "@/lib/ollama";
 
 export const runtime = "nodejs";
 
@@ -10,7 +11,7 @@ export async function GET(req: NextRequest) {
   const authToken = req.nextUrl.searchParams.get("authToken") || process.env.OLLAMA_AUTH_TOKEN || "";
 
   const headers: Record<string, string> = {};
-  if (authToken) headers.authorization = `Bearer ${authToken}`;
+  if (authToken) headers.authorization = authHeaderValue(authToken);
 
   try {
     const res = await fetch(`${baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) });

@@ -38,9 +38,14 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
   }, [code, language, dark]);
 
   const onCopy = async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can be unavailable (insecure context, missing
+      // permission, older browser) — fail quietly rather than throw.
+    }
   };
 
   return (

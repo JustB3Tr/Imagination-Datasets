@@ -14,16 +14,21 @@ UI builds and injects that exact text on every request.
 Ollama exposes an OpenAI-compatible endpoint at
 `http://<host>:11434/v1/chat/completions`. This app never calls that endpoint
 from the browser — a Next.js API route (`src/app/api/chat/route.ts`) proxies
-and streams the request server-side, so the base URL and any auth token stay
-off the client and CORS is never an issue.
+and streams the request server-side. That avoids a browser-to-Ollama CORS
+fight and means Ollama itself never has to trust arbitrary browser origins;
+it does not mean the base URL/token are secret from the client, since they
+originate from the client (see below).
 
 The base URL is **not** hardcoded. Because Ollama is commonly tunneled with
 `cloudflared tunnel --url http://localhost:11434` (which mints a new random
 `https://<random-words>.trycloudflare.com` URL on every restart), the base
 URL, model tag, and auth token are all editable at runtime from the
-**Settings** panel (gear icon) and persisted in `localStorage`. The
-`OLLAMA_BASE_URL` / `OLLAMA_MODEL` / `OLLAMA_AUTH_TOKEN` env vars only supply
-the defaults used before you've set anything in Settings.
+**Settings** panel (gear icon), persisted in `localStorage`, and sent to the
+API route on every request (`src/lib/stream-chat.ts`), which forwards them
+to Ollama. The `OLLAMA_BASE_URL` / `OLLAMA_MODEL` / `OLLAMA_AUTH_TOKEN` env
+vars only supply the defaults used before you've set anything in Settings —
+this is a single-user local tool, not a multi-tenant deployment, so
+client-supplied connection details are an accepted tradeoff here.
 
 ## The system prompt contract
 

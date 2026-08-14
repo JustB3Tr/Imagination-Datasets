@@ -113,7 +113,7 @@ function SettingsForm({
           type="password"
           value={authToken}
           onChange={(e) => setAuthToken(e.target.value)}
-          placeholder="Bearer token, if your tunnel requires one"
+          placeholder="Token, with or without a leading 'Bearer '"
           spellCheck={false}
         />
       </div>

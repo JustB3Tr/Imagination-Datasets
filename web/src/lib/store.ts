@@ -60,7 +60,10 @@ export const useAppStore = create<AppStore>()(
         settings: state.settings,
         effort: state.effort,
         mode: state.mode,
-        messages: state.messages,
+        // Strip transient in-flight state — a message frozen at streaming:
+        // true from a reload/crash mid-stream would otherwise show a
+        // permanent loading cursor with no request actually running.
+        messages: state.messages.map((m) => ({ ...m, streaming: undefined })),
       }),
     },
   ),

@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { buildSystemPrompt, type Mode, type EffortLevel } from "@/lib/prompt";
+import { authHeaderValue } from "@/lib/ollama";
 
 export const runtime = "nodejs";
 
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
   ];
 
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (authToken) headers.authorization = `Bearer ${authToken}`;
+  if (authToken) headers.authorization = authHeaderValue(authToken);
 
   let upstream: Response;
   try {
