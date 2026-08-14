@@ -43,8 +43,27 @@ from unsloth.chat_templates import train_on_responses_only
 
 import torch
 from datasets import Dataset
-from transformers import TrainingArguments
+from transformers import TrainerCallback, TrainingArguments
 from trl import SFTTrainer, SFTConfig
+
+
+class LogFileCallback(TrainerCallback):
+    """Mirrors every trainer.log() call (loss, eval_loss, learning_rate,
+    grad_norm, epoch, etc.) to a plain-text file in output_dir, in addition
+    to stdout -- so you can just send training_log.txt back for eval instead
+    of pasting the whole Colab console."""
+
+    def __init__(self, log_path: str):
+        self.log_path = log_path
+        with open(self.log_path, "w") as f:
+            f.write(f"Training log started: {json.dumps({'log_path': log_path})}\n")
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is None:
+            return
+        entry = {"step": state.global_step, **logs}
+        with open(self.log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
 
 def find_dataset_file(name: str) -> str:
@@ -392,12 +411,14 @@ def main():
         packing=False,  # keep each conversation as its own sample (no cross-example bleed)
     )
 
+    log_path = os.path.join(args.output_dir, "training_log.txt")
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         args=training_args,
+        callbacks=[LogFileCallback(log_path)],
     )
 
     # Mask loss to assistant turns only -- see module docstring for why this
@@ -411,11 +432,62 @@ def main():
     print("Starting training...")
     trainer.train(resume_from_checkpoint=resume_from)
 
-    # ---- 6. Save the LoRA adapter ----
+    # ---- 6. Export charts.json (everything W&B tracks by default) ----
+    # trainer.state.log_history is a flat list of dicts, one per logging_steps
+    # / eval_steps interval, mixing train-loss entries ({"loss", "grad_norm",
+    # "learning_rate", "epoch", "step"}) and eval entries ({"eval_loss",
+    # "epoch", "step"}). Split them into separate named series so it's easy
+    # to plot step-vs-metric without re-deriving this on the other end.
+    log_history = trainer.state.log_history
+    series = {
+        "train_loss": [], "eval_loss": [], "learning_rate": [],
+        "grad_norm": [], "epoch": [],
+    }
+    for entry in log_history:
+        step = entry.get("step")
+        if step is None:
+            continue
+        if "loss" in entry:
+            series["train_loss"].append({"step": step, "value": entry["loss"]})
+        if "eval_loss" in entry:
+            series["eval_loss"].append({"step": step, "value": entry["eval_loss"]})
+        if "learning_rate" in entry:
+            series["learning_rate"].append({"step": step, "value": entry["learning_rate"]})
+        if "grad_norm" in entry:
+            series["grad_norm"].append({"step": step, "value": entry["grad_norm"]})
+        if "epoch" in entry:
+            series["epoch"].append({"step": step, "value": entry["epoch"]})
+
+    best_eval = min(series["eval_loss"], key=lambda e: e["value"]) if series["eval_loss"] else None
+    charts = {
+        "run": {
+            "output_dir": args.output_dir,
+            "train_file": args.train_file,
+            "eval_file": args.eval_file,
+            "model_name": args.model_name,
+            "epochs": args.epochs,
+            "learning_rate": args.learning_rate,
+            "lora_r": args.lora_r,
+            "lora_alpha": args.lora_alpha,
+            "total_steps": trainer.state.global_step,
+        },
+        "best_eval_loss": best_eval,
+        "load_best_model_at_end": training_args.load_best_model_at_end,
+        "series": series,
+        "raw_log_history": log_history,
+    }
+    charts_path = os.path.join(args.output_dir, "charts.json")
+    with open(charts_path, "w") as f:
+        json.dump(charts, f, indent=2)
+    print(f"Wrote training charts to {charts_path}")
+
+    # ---- 7. Save the LoRA adapter ----
     adapter_dir = os.path.join(args.output_dir, "lora_adapter_final")
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
     print(f"\nDone. LoRA adapter saved to {adapter_dir}")
+    print(f"Training log: {log_path}")
+    print(f"Charts data: {charts_path}")
     print("Next steps: merge the adapter into the base weights, convert to "
           "GGUF via llama.cpp's convert_hf_to_gguf.py, quantize to Q4_K_M, "
           "then build a Modelfile with a TEMPLATE block matching this exact "
