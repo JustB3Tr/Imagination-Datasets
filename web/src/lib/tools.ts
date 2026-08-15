@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { promises as fs } from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -173,27 +175,14 @@ function truncate(text: string, limit = MAX_COMMAND_OUTPUT_CHARS) {
 }
 
 function isPrivateIpv4(host: string) {
+  const octets = host.split(".").map((part) => Number(part));
+  const secondOctet = octets[1];
   return (
     host === "0.0.0.0" ||
     host.startsWith("10.") ||
     host.startsWith("127.") ||
     host.startsWith("169.254.") ||
-    host.startsWith("172.16.") ||
-    host.startsWith("172.17.") ||
-    host.startsWith("172.18.") ||
-    host.startsWith("172.19.") ||
-    host.startsWith("172.20.") ||
-    host.startsWith("172.21.") ||
-    host.startsWith("172.22.") ||
-    host.startsWith("172.23.") ||
-    host.startsWith("172.24.") ||
-    host.startsWith("172.25.") ||
-    host.startsWith("172.26.") ||
-    host.startsWith("172.27.") ||
-    host.startsWith("172.28.") ||
-    host.startsWith("172.29.") ||
-    host.startsWith("172.30.") ||
-    host.startsWith("172.31.") ||
+    (host.startsWith("172.") && Number.isInteger(secondOctet) && secondOctet >= 16 && secondOctet <= 31) ||
     host.startsWith("192.168.")
   );
 }
@@ -231,14 +220,14 @@ async function assertSafeRemoteUrl(url: URL) {
   }
 }
 
-function ensureString(value: unknown, name: string) {
+function requireNonEmptyString(value: unknown, name: string) {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`"${name}" must be a non-empty string.`);
   }
   return value;
 }
 
-function ensureStringValue(value: unknown, name: string) {
+function requireString(value: unknown, name: string) {
   if (typeof value !== "string") {
     throw new Error(`"${name}" must be a string.`);
   }
@@ -303,7 +292,7 @@ async function readFile(args: unknown) {
   const scope = getScope(input, "workspace");
   if (scope === "storage") await ensureStorageRoots();
   const root = getScopeRoot(scope);
-  const target = resolveScopedPath(root, ensureString(input.path, "path"));
+  const target = resolveScopedPath(root, requireNonEmptyString(input.path, "path"));
   const stat = await fs.stat(target);
   if (!stat.isFile()) throw new Error("Path is not a file.");
   if (stat.size > MAX_FILE_BYTES) throw new Error(`File is too large to read (${stat.size} bytes).`);
@@ -316,11 +305,14 @@ async function writeFile(args: unknown) {
   }
   const input = args as Record<string, unknown>;
   await ensureStorageRoots();
-  const target = resolveScopedPath(STORAGE_FILES_ROOT, ensureString(input.path, "path"));
-  const content = ensureStringValue(input.content, "content");
+  const target = resolveScopedPath(STORAGE_FILES_ROOT, requireNonEmptyString(input.path, "path"));
+  const content = requireString(input.content, "content");
   const append = Boolean(input.append);
   const bytes = Buffer.byteLength(content, "utf8");
-  if (bytes > MAX_FILE_BYTES) throw new Error(`Content is too large to write (${bytes} bytes).`);
+  const existingBytes = append ? await fs.stat(target).then((stat) => stat.size).catch(() => 0) : 0;
+  if (existingBytes + bytes > MAX_FILE_BYTES) {
+    throw new Error(`Content is too large to write (${existingBytes + bytes} bytes total).`);
+  }
   await fs.mkdir(path.dirname(target), { recursive: true });
   if (append) {
     await fs.appendFile(target, content, "utf8");
@@ -344,7 +336,7 @@ async function writeFile(args: unknown) {
 async function runCommand(args: unknown) {
   if (typeof args !== "object" || args === null) throw new Error('Expected an object with "command".');
   const input = args as Record<string, unknown>;
-  const command = ensureString(input.command, "command");
+  const command = requireNonEmptyString(input.command, "command");
   await ensureStorageRoots();
   const isWindows = process.platform === "win32";
   const file = isWindows ? "powershell.exe" : "bash";
@@ -378,39 +370,69 @@ async function runCommand(args: unknown) {
 async function fetchUrl(args: unknown) {
   if (typeof args !== "object" || args === null) throw new Error('Expected an object with "url".');
   const input = args as Record<string, unknown>;
-  const rawUrl = ensureString(input.url, "url");
+  const rawUrl = requireNonEmptyString(input.url, "url");
   const url = new URL(rawUrl);
   if (!["http:", "https:"].includes(url.protocol)) {
     throw new Error("URL must use http or https.");
   }
   await assertSafeRemoteUrl(url);
-  const res = await fetch(url, {
-    redirect: "manual",
-    headers: {
-      "user-agent": "imagination-ui/0.1",
-      accept: "text/plain,text/markdown,text/html,application/json;q=0.9,*/*;q=0.8",
-    },
-  });
-  if (res.status >= 300 && res.status < 400) {
-    throw new Error(`Redirects are blocked for safety. Received ${res.status} with Location: ${res.headers.get("location") ?? "(none)"}.`);
+  const resolved = await lookup(url.hostname);
+  if ((resolved.family === 4 && isPrivateIpv4(resolved.address)) || (resolved.family === 6 && isPrivateIpv6(resolved.address))) {
+    throw new Error("Resolved address is private and is not allowed.");
   }
-  const body = truncate(await res.text());
-  return JSON.stringify(
-    {
-      url: url.toString(),
-      status: res.status,
-      statusText: res.statusText,
-      body,
-    },
-    null,
-    2,
-  );
+  const result = await new Promise<{
+    url: string;
+    status: number;
+    statusText: string;
+    body: string;
+  }>((resolve, reject) => {
+    const request = (url.protocol === "https:" ? https : http).request(
+      {
+        protocol: url.protocol,
+        hostname: resolved.address,
+        port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        headers: {
+          Host: url.host,
+          "User-Agent": "imagination-ui/0.1",
+          Accept: "text/plain,text/markdown,text/html,application/json;q=0.9,*/*;q=0.8",
+        },
+        servername: url.hostname,
+        timeout: COMMAND_TIMEOUT_MS,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          if ((response.statusCode ?? 0) >= 300 && (response.statusCode ?? 0) < 400) {
+            reject(
+              new Error(
+                `Redirects are blocked for safety. Received ${response.statusCode} with Location: ${response.headers.location ?? "(none)"}.`,
+              ),
+            );
+            return;
+          }
+          resolve({
+            url: url.toString(),
+            status: response.statusCode ?? 0,
+            statusText: response.statusMessage ?? "",
+            body: truncate(Buffer.concat(chunks).toString("utf8")),
+          });
+        });
+      },
+    );
+    request.on("timeout", () => request.destroy(new Error("Request timed out.")));
+    request.on("error", reject);
+    request.end();
+  });
+  return JSON.stringify(result, null, 2);
 }
 
 async function webSearch(args: unknown) {
   if (typeof args !== "object" || args === null) throw new Error('Expected an object with "query".');
   const input = args as Record<string, unknown>;
-  const query = ensureString(input.query, "query");
+  const query = requireNonEmptyString(input.query, "query");
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
   const res = await fetch(url, {
     headers: {
