@@ -463,7 +463,23 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
-            example = json.loads(raw)
+            try:
+                example = json.loads(raw)
+            except json.JSONDecodeError:
+                # Code-heavy answers (general_code especially) often contain
+                # a real, literal newline inside a JSON string value where
+                # the model should have written \n -- strict mode treats
+                # that as an invalid control character and, depending on
+                # where it falls, can cascade into "Unterminated string"
+                # once the parser goes hunting for the real closing quote.
+                # strict=False accepts literal control characters in
+                # strings, recovering this specific (common) case for free
+                # -- same fallback pattern already used in train.py/
+                # dedup_and_split.py's _try_parse_dict for the analogous
+                # tool_call-arguments issue. Doesn't recover a genuinely
+                # unescaped quote character breaking the string boundary
+                # itself -- that's still unrecoverable without guessing.
+                example = json.loads(raw, strict=False)
 
             invalid_reason = validate_example(example, level)
             if invalid_reason:
