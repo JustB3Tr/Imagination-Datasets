@@ -215,6 +215,15 @@ Rules:
   field containing what looks like its own JSON). If you're running low on
   room, wrap up the current message and close the JSON early rather than
   leaving a string unterminated.
+- CRITICAL: every literal backslash inside a string value (Windows paths,
+  regexes, LaTeX, escape sequences in code) MUST be written as \\\\ in the
+  JSON, not a single \\. This applies EVERYWHERE a backslash appears,
+  including right before a string's closing quote (e.g. a path ending in
+  "...\\Users\\foo" must be written "...\\\\Users\\\\foo" -- a single
+  trailing backslash right before the closing quote is invalid JSON and
+  breaks parsing of the entire response, not just that one field. When
+  writing code content with backslashes, double-check every one before
+  closing the string.
 """.strip()
 
 
