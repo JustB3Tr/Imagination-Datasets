@@ -16,32 +16,41 @@ DOMAINS = ["agentic_tool_use", "subagent_orchestration", "general_code"]
 # that it doesn't need its own ultra treatment (see PLAN.md "Open decisions").
 ULTRA_DOMAINS = ["agentic_tool_use", "general_code"]
 
-# Rough output length budget per reasoning level. Used both to steer the
-# generator model and to cap how much you pay for per example.
+# This is a SAFETY CEILING to prevent truncation, not a per-level target
+# length. Billing is metered on actual tokens generated, not this number --
+# raising it costs nothing unless a call genuinely needs it. What
+# differentiates reasoning levels is how much genuine deliberation happens
+# (the <think> block's depth/structure, enforced by LEVEL_INSTRUCTIONS and
+# validate_example's labeled-line checks), NOT how long the final answer
+# is: a "low" effort task that happens to require a large, genuinely
+# complex piece of code should still produce all of it in full, and a
+# "max" effort task with a small, simple scope shouldn't be padded to look
+# longer. Every level below "ultra" shares the same ceiling for exactly
+# this reason -- splitting them by level (the old design: low=500,
+# medium=1000, high=6000, max=9000) silently capped how much output a
+# "low"/"medium" example could ever contain, making it structurally
+# impossible to generate the "low effort, big task" scenario at all.
+# 9000 is high's real calibration history: 2000 was routinely truncating
+# on examples with substantial code (an LLM-as-judge audit found ~30% of
+# "high" examples cut off mid-answer), and 3200 still hit
+# finish_reason="length" on a real code-heavy call (15.9k chars written,
+# cut off mid-sentence) -- extending that same proven-sufficient ceiling
+# to every level removes the truncation risk everywhere, not just at high.
+_STANDARD_OUTPUT_CEILING = 9000
 MAX_TOKENS_BY_LEVEL = {
-    "low": 500,      # little to no visible reasoning, answer fast
-    "medium": 1000,  # some visible reasoning, a few steps
-    "high": 6000,    # explicit, thorough step-by-step reasoning + a real,
-                      # complete answer -- 2000 was routinely truncating on
-                      # examples with substantial code (an LLM-as-judge audit
-                      # found ~30% of "high" examples cut off mid-answer), and
-                      # 3200 still hit finish_reason="length" on a real
-                      # DeepSeek V4 Flash (gmicloud/fp8) call for a code-heavy
-                      # task (15.9k chars written, cut off mid-sentence).
-                      # Output tokens are cheap ($0.224/1M on this route), so
-                      # the safety margin costs essentially nothing.
-    "max": 9000,      # two structured alternatives (not one) plus a complete
-                      # answer -- calibrated empirically against real
-                      # deepseek-chat calls before any real generation spend,
-                      # see PLAN.md.
+    "low": _STANDARD_OUTPUT_CEILING,
+    "medium": _STANDARD_OUTPUT_CEILING,
+    "high": _STANDARD_OUTPUT_CEILING,
+    "max": _STANDARD_OUTPUT_CEILING,
     "ultra": 18000,   # UNCALIBRATED starting point (PLAN.md's 16k-20k
-                      # estimate, midpoint) -- multiple tool-call round
-                      # trips including a mandatory failure+correction cycle
-                      # eat far more tokens than a single structured answer.
-                      # high's real history: 2000 and 3200 both silently
-                      # truncated before 6000 proved sufficient -- do NOT
-                      # skip the small calibration batch (see PLAN.md step 4)
-                      # before spending real money at this number.
+                      # estimate, midpoint) -- needs more headroom than the
+                      # others for a structural reason, not a depth-of-
+                      # thought one: multiple tool-call round trips
+                      # (including the mandatory failure+correction cycle)
+                      # mean more conversational turns, which cost tokens
+                      # mechanically regardless of reasoning depth. Do NOT
+                      # skip the small calibration batch (see PLAN.md step
+                      # 4) before spending real money at this number.
 }
 
 LEVEL_INSTRUCTIONS = {
@@ -147,6 +156,23 @@ SUBAGENT_MODE_SYSTEM = (
     "and return a clear, structured result. {level_instruction}"
 )
 
+# Shared across every mode and level -- the reasoning_effort level controls
+# how much you deliberate, not how long your output is. Appended after
+# {level_instruction} in build_system_prompt() rather than folded into each
+# LEVEL_INSTRUCTIONS entry, so it can never drift out of sync across levels
+# and applies uniformly even as new tiers get added.
+LENGTH_INSTRUCTION = (
+    " Your response length is dictated entirely by what the task actually "
+    "requires, never by the reasoning_effort level -- write as much as "
+    "needed to fully and correctly finish it, and do not cut a thought, "
+    "explanation, or piece of code short because of an assumed length "
+    "limit. A low-effort task that happens to require a large amount of "
+    "code should still produce all of it in full; a max-effort task with a "
+    "small, simple scope should not be padded with unnecessary length. "
+    "reasoning_effort is about how much you deliberate before and during "
+    "acting, not about producing a longer or shorter final answer."
+)
+
 # --- Tool schema used inside generated examples -------------------------
 # Keep this small and generic. The generator model should invent realistic
 # domain tools (fetch, shell, file_search, sql_query, etc.) per example, but
@@ -236,7 +262,7 @@ def build_system_prompt(mode: str, level: str) -> str:
         "orchestrator": ORCHESTRATOR_MODE_SYSTEM,
         "subagent": SUBAGENT_MODE_SYSTEM,
     }[mode]
-    return template.format(level_instruction=level_instruction)
+    return template.format(level_instruction=level_instruction) + LENGTH_INSTRUCTION
 
 
 def mode_for_domain(domain: str) -> str:
