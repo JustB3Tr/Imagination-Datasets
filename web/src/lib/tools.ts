@@ -11,7 +11,9 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_WORKSPACE_ROOT = path.resolve(process.cwd(), "..");
 const WORKSPACE_ROOT = path.resolve(process.env.IMAGINATION_WORKSPACE_ROOT || DEFAULT_WORKSPACE_ROOT);
-const STORAGE_ROOT = path.resolve(process.env.IMAGINATION_TOOL_STORAGE_ROOT || path.join(os.homedir(), ".imagination-ui"));
+const STORAGE_ROOT = path.resolve(
+  /* turbopackIgnore: true */ process.env.IMAGINATION_TOOL_STORAGE_ROOT || path.join(os.homedir(), ".imagination-ui"),
+);
 const STORAGE_FILES_ROOT = path.join(STORAGE_ROOT, "files");
 const COMMAND_SANDBOX_ROOT = path.join(STORAGE_ROOT, "sandbox");
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -236,7 +238,7 @@ function ensureString(value: unknown, name: string) {
   return value;
 }
 
-function ensureText(value: unknown, name: string) {
+function ensureStringValue(value: unknown, name: string) {
   if (typeof value !== "string") {
     throw new Error(`"${name}" must be a string.`);
   }
@@ -315,7 +317,7 @@ async function writeFile(args: unknown) {
   const input = args as Record<string, unknown>;
   await ensureStorageRoots();
   const target = resolveScopedPath(STORAGE_FILES_ROOT, ensureString(input.path, "path"));
-  const content = ensureText(input.content, "content");
+  const content = ensureStringValue(input.content, "content");
   const append = Boolean(input.append);
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > MAX_FILE_BYTES) throw new Error(`Content is too large to write (${bytes} bytes).`);
@@ -349,13 +351,14 @@ async function runCommand(args: unknown) {
   const shellArgs = isWindows
     ? ["-NoProfile", "-NonInteractive", "-Command", command]
     : ["-lc", command];
-  const env = Object.fromEntries(
-    SAFE_ENV_KEYS.flatMap((key) => {
-      if (key === "HOME" || key === "USERPROFILE") return [[key, COMMAND_SANDBOX_ROOT]];
-      if ((key === "TMP" || key === "TEMP") && process.env[key]) return [[key, COMMAND_SANDBOX_ROOT]];
-      return process.env[key] ? [[key, process.env[key]!]] : [];
-    }),
-  );
+  const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV };
+  for (const key of SAFE_ENV_KEYS) {
+    if (key === "HOME" || key === "USERPROFILE" || key === "TMP" || key === "TEMP") {
+      env[key] = COMMAND_SANDBOX_ROOT;
+      continue;
+    }
+    if (process.env[key]) env[key] = process.env[key];
+  }
   const { stdout, stderr } = await execFileAsync(file, shellArgs, {
     cwd: COMMAND_SANDBOX_ROOT,
     env,

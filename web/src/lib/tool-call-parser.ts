@@ -48,6 +48,21 @@ function parseToolPayload(payload: unknown): Array<{ name: string; args: unknown
 
   const record = payload as Record<string, unknown>;
 
+  if (Array.isArray(record.content)) {
+    return record.content.flatMap(parseToolPayload);
+  }
+
+  if (typeof record.type === "string" && (record.type === "tool_use" || record.type === "function_call")) {
+    if (typeof record.name === "string") {
+      if (record.input && typeof record.input === "object") return [{ name: record.name, args: record.input }];
+      if (typeof record.arguments === "string") {
+        return [{ name: record.name, args: tryParseJson(record.arguments) ?? { input: record.arguments } }];
+      }
+      if (record.arguments && typeof record.arguments === "object") return [{ name: record.name, args: record.arguments }];
+      return [{ name: record.name, args: {} }];
+    }
+  }
+
   if (typeof record.name === "string") {
     if (record.arguments && typeof record.arguments === "object") {
       return [{ name: record.name, args: record.arguments }];
@@ -94,14 +109,16 @@ function parseJsonBlocks(content: string) {
     const parsed = tryParseJson(fenceMatch[1].trim());
     const extracted = parseToolPayload(parsed);
     if (extracted.length === 0) continue;
-    extracted.forEach((tool, index) => toolCalls.push(makeToolCall(tool.name, tool.args, toolCalls.length + index)));
+    const offset = toolCalls.length;
+    extracted.forEach((tool, index) => toolCalls.push(makeToolCall(tool.name, tool.args, offset + index)));
     blocks.push(fenceMatch[0]);
   }
 
   const fullJson = tryParseJson(content.trim());
   const fullJsonTools = parseToolPayload(fullJson);
   if (blocks.length === 0 && fullJsonTools.length > 0) {
-    fullJsonTools.forEach((tool, index) => toolCalls.push(makeToolCall(tool.name, tool.args, toolCalls.length + index)));
+    const offset = toolCalls.length;
+    fullJsonTools.forEach((tool, index) => toolCalls.push(makeToolCall(tool.name, tool.args, offset + index)));
     cleanContent = "";
   } else {
     for (const block of blocks) cleanContent = cleanContent.replace(block, "");
@@ -119,7 +136,8 @@ function parseXmlBlocks(content: string) {
   while ((toolUseMatch = toolUsePattern.exec(content))) {
     const parsed = tryParseJson(toolUseMatch[1].trim());
     const extracted = parseToolPayload(parsed);
-    extracted.forEach((tool, index) => toolCalls.push(makeToolCall(tool.name, tool.args, toolCalls.length + index)));
+    const offset = toolCalls.length;
+    extracted.forEach((tool, index) => toolCalls.push(makeToolCall(tool.name, tool.args, offset + index)));
     if (extracted.length > 0) cleanContent = cleanContent.replace(toolUseMatch[0], "");
   }
 
