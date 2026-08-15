@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { buildSystemPrompt, type Mode, type EffortLevel } from "@/lib/prompt";
 import { authHeaderValue } from "@/lib/ollama";
+import { CHAT_TOOLS } from "@/lib/tools";
 
 export const runtime = "nodejs";
 
@@ -75,6 +76,8 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         messages: upstreamMessages,
+        tools: CHAT_TOOLS,
+        tool_choice: "auto",
         stream: true,
       }),
       signal: req.signal,

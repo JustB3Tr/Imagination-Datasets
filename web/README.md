@@ -67,7 +67,8 @@ in `EFFORT_LEVELS`.
 - `<think>` blocks parsed out of the streamed response and rendered as a
   collapsible "Reasoning" panel, expanded by default while streaming.
 - `tool_calls` and paired `tool` results rendered as their own cards in the
-  transcript (no real tool dispatch in v1 — display only).
+  transcript, with an allowlisted server-side tool runner for file reads/writes,
+  directory listing, shell commands, URL fetches, and web search.
 - Markdown rendering with syntax-highlighted code blocks (Shiki) and
   copy-to-clipboard.
 - New conversation, stop/cancel an in-flight generation, dark/light theme
@@ -91,6 +92,27 @@ that's actually pulled (e.g. `ollama pull llama3.2` for a quick smoke test
 against a non-Imagination model — the UI and streaming don't care which
 model is behind the endpoint, only Imagination 2.1 Pro will actually follow
 the `<think>` format the reasoning panel expects).
+
+### Built-in tools
+
+The chat route now advertises a small tool allowlist to Ollama and executes
+those tool calls server-side when the model emits them:
+
+- `list_files`
+- `read_file`
+- `write_file`
+- `run_command`
+- `fetch_url`
+- `web_search`
+
+Safety limits:
+
+- File tools are restricted to the workspace root above the `web/` folder by
+  default. Override with `IMAGINATION_WORKSPACE_ROOT` if needed.
+- Command execution is limited to that same workspace root and times out after
+  30 seconds.
+- File reads/writes and tool outputs are truncated/size-limited to keep the UI
+  responsive.
 
 ## Tech stack
 
@@ -134,7 +156,7 @@ src/
   already accepts a `mode` param, so this is a UI-only addition later.
 - Multiple saved conversations (sidebar, rename/delete).
 - "Ultra" effort level once trained.
-- Real tool execution/dispatch — v1 only displays what the model emits.
+- Richer tool sandboxing/permissions and orchestration-specific tool flows.
 
 ## Linting
 
