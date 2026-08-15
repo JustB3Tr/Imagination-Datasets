@@ -502,14 +502,22 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
 
 
 def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: int,
-              max_spend: float, max_calls: int | None, dry_run: bool):
+              max_spend: float, max_calls: int | None, dry_run: bool, force_no_tool: bool = False):
     seeds = load_seeds(domain)
     mode = mode_for_domain(domain)
     out_path = OUT_DIR / f"{domain}__{level}.jsonl"
 
     def roll_no_tool(job_mode: str) -> bool:
-        return (level in NO_TOOL_LEVELS and job_mode != "orchestrator"
-                and random.random() < NO_TOOL_VARIANT_RATE)
+        if job_mode == "orchestrator":
+            return False
+        if force_no_tool:
+            # Targeted backfill mode (--force-no-tool): every eligible job
+            # is a no_tool variant, instead of the usual NO_TOOL_VARIANT_RATE
+            # sampling -- for topping up a specific domain's negative-example
+            # coverage without needing ~5x the volume to hit the normal rate
+            # by chance.
+            return level in NO_TOOL_LEVELS
+        return level in NO_TOOL_LEVELS and random.random() < NO_TOOL_VARIANT_RATE
 
     jobs = []
     for seed in seeds:
@@ -579,6 +587,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                      help="estimate cost with ZERO API calls made, using worst-case "
                           "token counts per level. Run this first.")
+    ap.add_argument("--force-no-tool", action="store_true",
+                     help="make EVERY eligible job (high/max, non-orchestrator) a "
+                          "no_tool variant instead of sampling at NO_TOOL_VARIANT_RATE. "
+                          "For targeted backfill of a domain's negative-example coverage "
+                          "without needing ~5x the volume to hit the normal rate by chance.")
     args = ap.parse_args()
 
     if args.max_calls is not None and args.max_calls < 1:
@@ -604,13 +617,13 @@ def main():
                 if level == "ultra" and domain not in ULTRA_DOMAINS:
                     continue
                 total += run_combo(client, domain, level, args.variants, args.workers,
-                                    args.max_spend, args.max_calls, args.dry_run)
+                                    args.max_spend, args.max_calls, args.dry_run, args.force_no_tool)
     else:
         if not (args.domain and args.level):
             print("Pass --domain and --level, or --all.", file=sys.stderr)
             sys.exit(1)
         total += run_combo(client, args.domain, args.level, args.variants, args.workers,
-                            args.max_spend, args.max_calls, args.dry_run)
+                            args.max_spend, args.max_calls, args.dry_run, args.force_no_tool)
 
     with _spend_lock:
         final_spend = _spend_state["usd"]
