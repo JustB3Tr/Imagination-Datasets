@@ -54,8 +54,8 @@ def _try_claim_call(max_calls):
 
 JUDGE_INSTRUCTIONS = """
 You are grading ONE training example for a coding/agentic assistant finetune.
-The example has a stated reasoning_effort level (low/medium/high) in its
-system prompt -- judge whether the answer's actual reasoning depth matches
+The example has a stated reasoning_effort level (low/medium/high/max/ultra) in
+its system prompt -- judge whether the answer's actual reasoning depth matches
 what that level claims, not just whether it's present.
 
 Score each of these 1-5 (5 = excellent, 1 = badly broken):
@@ -64,13 +64,21 @@ Score each of these 1-5 (5 = excellent, 1 = badly broken):
   tool "found" and what the final answer claims?
 - level_match: does the reasoning depth genuinely match the stated level?
   low should be terse with no filler. medium should show real (if brief)
-  deliberation. high should show thorough reasoning that considers at
-  least one alternative before deciding. A "high" example with a shallow
-  one-line <think> is a level_match failure even if it's technically
-  correct.
+  deliberation. high should show thorough reasoning that considers ONE
+  concrete alternative before deciding (labeled: Problem/Alternative
+  considered/Rejected because/Chosen because). max should be similar but
+  weigh TWO genuinely different alternatives, each with its own specific
+  rejection reason, before committing (labeled: Problem/Alternative 1
+  considered/Rejected because/Alternative 2 considered/Rejected because/
+  Chosen approach/Why this wins) -- a "max" example that only names one
+  alternative, or whose second alternative is just a minor variation of the
+  first, is a level_match failure. ultra should show real verification via
+  tool calls and at least one genuine failure-then-correction cycle, not a
+  clean one-pass success. A "high"/"max" example with a shallow one-line
+  <think> is a level_match failure even if it's technically correct.
 - realism: are specifics concrete (real-sounding file names, error
   messages, versions, numbers) rather than generic placeholders like
-  "some function" or "an error occurred"?
+  "some function" or "an error occurred".
 
 Return ONLY a JSON object, no markdown fences, no commentary:
 {
@@ -181,7 +189,7 @@ def main():
     ap.add_argument("--workers", type=int, default=2,
                      help="Keep low for free-tier providers with per-minute quotas.")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--level", choices=["low", "medium", "high"], default=None,
+    ap.add_argument("--level", choices=["low", "medium", "high", "max", "ultra"], default=None,
                      help="Judge only buckets at this reasoning level.")
     args = ap.parse_args()
 
@@ -232,7 +240,7 @@ def main():
     for r in results:
         by_level[r["_meta"]["level"]].append(r)
     print("\nlevel_match by stated level (the key thing to watch):")
-    for lv in ["low", "medium", "high"]:
+    for lv in ["low", "medium", "high", "max", "ultra"]:
         vals = [r["level_match"] for r in by_level.get(lv, []) if "level_match" in r]
         if vals:
             print(f"  {lv:8s}: avg {sum(vals)/len(vals):.2f}  (n={len(vals)})")
