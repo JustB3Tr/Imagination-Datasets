@@ -116,8 +116,24 @@ def load_all_raw():
 
 
 def example_text(ex: dict) -> str:
+    # Deliberately excludes "system" messages -- build_system_prompt()
+    # returns the exact same string for every example sharing a
+    # (mode, level), so it's byte-identical across an entire dedup bucket
+    # and adds zero discriminative signal. Worse, it actively hurts: since
+    # PR #17 switched high/max to a much longer, structurally repetitive
+    # labeled-<think> system prompt (883-1149 chars vs ~194 for low), that
+    # constant prefix could dominate a large fraction of the 4000-char
+    # embedding cap for shorter examples, making genuinely different
+    # tasks look artificially similar and inflating the dedup removal
+    # rate. Confirmed empirically: a fresh high-tier regeneration run
+    # (post-PR-#17 system prompt) saw 76-94% of examples in some buckets
+    # removed as "duplicates" -- 2-4x the historical rate -- before this
+    # fix. Only user/assistant/tool content (the part that actually
+    # varies per example) should drive similarity.
     parts = []
     for m in ex.get("messages", []):
+        if m.get("role") == "system":
+            continue
         content = m.get("content")
         if isinstance(content, str):
             parts.append(content)
