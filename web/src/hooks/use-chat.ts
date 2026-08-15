@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useAppStore } from "@/lib/store";
 import { streamChat, ChatStreamError } from "@/lib/stream-chat";
+import { parseToolCallsFromContent } from "@/lib/tool-call-parser";
 import type { ChatMessage, ToolCall } from "@/lib/types";
 
 function genId() {
@@ -13,7 +14,7 @@ function genId() {
 
 export type ChatStatus = "idle" | "streaming" | "error";
 
-const MAX_TOOL_ROUNDS = 4;
+const MAX_TOOL_ROUNDS = 8;
 
 async function runTools(toolCalls: ToolCall[]) {
   const res = await fetch("/api/tools", {
@@ -105,7 +106,7 @@ export function useChat() {
           const message =
             err instanceof ChatStreamError || err instanceof Error
               ? err.message
-              : "Something went wrong talking to Imagination 2.1 Pro.";
+              : "Something went wrong talking to the model.";
           removeMessage(assistantId);
           setError(message);
           setStatus("error");
@@ -115,6 +116,18 @@ export function useChat() {
         }
 
         assistantMessage.streaming = false;
+        if (assistantToolCalls.length === 0 && assistantMessage.content.trim()) {
+          const parsed = parseToolCallsFromContent(assistantMessage.content);
+          if (parsed.toolCalls.length > 0) {
+            assistantToolCalls = parsed.toolCalls;
+            assistantMessage.toolCalls = parsed.toolCalls;
+            assistantMessage.content = parsed.cleanContent;
+            updateMessage(assistantId, {
+              toolCalls: parsed.toolCalls,
+              content: parsed.cleanContent,
+            });
+          }
+        }
         currentHistory = [...currentHistory, { ...assistantMessage, toolCalls: assistantToolCalls }];
 
         if (assistantToolCalls.length === 0) {
@@ -140,8 +153,13 @@ export function useChat() {
         }
       }
 
-      setStatus("error");
-      setError(`Stopped after ${MAX_TOOL_ROUNDS} tool rounds to avoid an infinite loop.`);
+      addMessage({
+        id: genId(),
+        role: "assistant",
+        content: `Stopped after ${MAX_TOOL_ROUNDS} tool rounds to avoid an infinite loop.`,
+        createdAt: Date.now(),
+      });
+      setStatus("idle");
     },
     [addMessage, updateMessage, appendToMessage, removeMessage, effort, mode, settings],
   );

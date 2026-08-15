@@ -96,7 +96,15 @@ the `<think>` format the reasoning panel expects).
 ### Built-in tools
 
 The chat route now advertises a small tool allowlist to Ollama and executes
-those tool calls server-side when the model emits them:
+those tool calls server-side when the model emits them. The client accepts:
+
+- OpenAI `tool_calls`
+- Anthropic-style `<tool_use>...</tool_use>` blocks
+- XML tags such as `<tool_call>`, `<tool>`, `<function_call>`, `<invoke>`, and
+  `<use_tool>`
+- JSON tool-call payloads emitted in fenced blocks or as the whole response
+
+Supported tool actions:
 
 - `list_files`
 - `read_file`
@@ -107,10 +115,15 @@ those tool calls server-side when the model emits them:
 
 Safety limits:
 
-- File tools are restricted to the workspace root above the `web/` folder by
+- Workspace reads stay inside the repository root above the `web/` folder by
   default. Override with `IMAGINATION_WORKSPACE_ROOT` if needed.
-- Command execution is limited to that same workspace root and times out after
-  30 seconds.
+- File writes are saved to persistent user storage (`~/.imagination-ui/files`
+  by default, or `%USERPROFILE%\.imagination-ui\files` on Windows). Override
+  with `IMAGINATION_TOOL_STORAGE_ROOT` if needed.
+- Command execution runs inside a dedicated persistent sandbox directory under
+  that same storage root, with a stripped-down environment and a 30 second
+  timeout.
+- URL fetches block private/local addresses and do not follow redirects.
 - File reads/writes and tool outputs are truncated/size-limited to keep the UI
   responsive.
 
