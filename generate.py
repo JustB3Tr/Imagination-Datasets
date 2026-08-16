@@ -129,9 +129,14 @@ SUBAGENT_VARIANT_RATE = 0.35
 # every prior generated example invents 1-2 tools regardless of whether the
 # task needs one (see build_prompt below), so the model never saw a genuine
 # "just answer, don't call anything" scenario at these effort levels. NOT
-# applied to "ultra" (its whole point is tool-call-heavy verify/iterate --
-# a no-tool scenario doesn't fit that tier) or "orchestrator" mode (which by
-# definition always delegates via run_subagent).
+# applied via ordinary NO_TOOL_VARIANT_RATE sampling to "ultra" (its main
+# scenario is tool-call-heavy verify/iterate) or "orchestrator" mode (which
+# by definition always delegates via run_subagent) -- ultra DOES get a
+# no-tool variant, but only as a deliberate --force-no-tool backfill pass
+# run separately after the main tool-using generation, never mixed in via
+# random sampling (see roll_no_tool below and the level == "ultra" branches
+# in build_prompt / validate_example for what that variant actually requires:
+# self-correction via reasoning, not a tool-revealed failure).
 NO_TOOL_VARIANT_RATE = 0.2
 NO_TOOL_LEVELS = ("high", "max")
 
@@ -169,7 +174,27 @@ def build_prompt(domain: str, level: str, seed_task: str, mode: str, no_tool: bo
         )
 
     ultra_structural_note = ""
-    if level == "ultra":
+    if level == "ultra" and no_tool:
+        # A genuinely tool-free ultra example -- the persistence/verify-then-
+        # fix pattern still has to show real self-correction, it just can't
+        # come from a tool result (there are none). It has to come from the
+        # assistant catching a genuine flaw in its OWN reasoning or a stale
+        # assumption it made, and explicitly correcting it, before the final
+        # answer -- not tool-revealed, but not skippable either.
+        ultra_structural_note = """
+STRUCTURAL REQUIREMENT for this no-tool ultra variant: because this example
+must not call any tool (see above), the required self-correction has to
+come from the assistant's OWN reasoning, not a tool result. Somewhere after
+the initial <think> block (either within it, or in a visible second pass),
+the assistant must catch a genuine flaw in its own prior reasoning or a
+stale/wrong assumption it made -- state the correction explicitly (e.g.
+"Wait, that's not right because...", "Actually, reconsidering...") -- and
+then give the corrected final answer. A clean single-pass answer with no
+visible self-caught error is NOT a valid example of this tier and will be
+rejected -- don't generate one. Do NOT fake this by inventing a pointless
+error just to check a box; the corrected mistake must be a realistic one
+someone could plausibly make on this specific task."""
+    elif level == "ultra":
         ultra_structural_note = """
 STRUCTURAL REQUIREMENT for this tier: the conversation MUST include at
 least one tool call whose result reveals something wrong or incomplete
@@ -223,7 +248,7 @@ def estimate_call_tokens(level: str, mode: str, user_prompt: str) -> tuple[int, 
     return input_tokens, output_tokens
 
 
-def validate_example(example: dict, level: str) -> str | None:
+def validate_example(example: dict, level: str, no_tool: bool = False) -> str | None:
     """Return an error string if the example is structurally incomplete or
     malformed, else None. Catches truncated generations that still parse as
     valid JSON (the model got cut off mid-conversation, e.g. right after a
@@ -317,7 +342,28 @@ def validate_example(example: dict, level: str) -> str | None:
             if missing:
                 return f"level is ultra but <think> block is missing required label(s): {missing}"
 
-    if level == "ultra":
+    if level == "ultra" and no_tool:
+        # The no-tool ultra variant (deliberate --force-no-tool backfill
+        # only, see NO_TOOL_LEVELS/roll_no_tool -- never mixed into the main
+        # run via random sampling): self-correction must come from the
+        # assistant's own reasoning, not a tool result, and there must be NO
+        # tool calls at all (a "no tool" example that slipped one in defeats
+        # the point and would teach a contradictory pattern).
+        tool_call_count = sum(len(m.get("tool_calls") or []) for m in messages)
+        if tool_call_count > 0:
+            return "level is ultra (no_tool variant) but contains tool_calls -- should have none"
+        correction_markers = re.compile(
+            r"\b(wait,?|actually,?|on second thought|hold on|let me "
+            r"reconsider|reconsidering|re-?check(ing)?|that'?s not right|"
+            r"I was (wrong|mistaken)|doesn'?t (hold|work)|flaw in|correcting "
+            r"(myself|that)|scratch that)\b", re.IGNORECASE,
+        )
+        assistant_text = "\n".join(
+            str(m.get("content") or "") for m in messages if m.get("role") == "assistant"
+        )
+        if not correction_markers.search(assistant_text):
+            return "level is ultra (no_tool variant) but no visible self-correction language found"
+    elif level == "ultra":
         # Structural requirement (see PLAN.md): a clean one-pass success with
         # no self-correction isn't a valid ultra example -- the whole point
         # of this tier is verify-then-fix, not just verify. Heuristic: at
@@ -481,7 +527,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
                 # itself -- that's still unrecoverable without guessing.
                 example = json.loads(raw, strict=False)
 
-            invalid_reason = validate_example(example, level)
+            invalid_reason = validate_example(example, level, no_tool)
             if invalid_reason:
                 raise ValueError(invalid_reason)
 
@@ -515,8 +561,11 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
             # is a no_tool variant, instead of the usual NO_TOOL_VARIANT_RATE
             # sampling -- for topping up a specific domain's negative-example
             # coverage without needing ~5x the volume to hit the normal rate
-            # by chance.
-            return level in NO_TOOL_LEVELS
+            # by chance. "ultra" is deliberately excluded from ordinary
+            # NO_TOOL_LEVELS sampling (see that constant's comment) but IS
+            # allowed here -- --force-no-tool is always an explicit,
+            # separate backfill invocation, never mixed into a main run.
+            return level in NO_TOOL_LEVELS or level == "ultra"
         return level in NO_TOOL_LEVELS and random.random() < NO_TOOL_VARIANT_RATE
 
     jobs = []
