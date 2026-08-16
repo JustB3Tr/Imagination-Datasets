@@ -37,6 +37,24 @@ const MODE_TEMPLATES: Record<Mode, string> = {
     "and return a clear, structured result. {level_instruction}",
 };
 
+/**
+ * Shared across every mode and level -- the reasoning_effort level controls
+ * how much the model deliberates, not how long its output is. Appended
+ * after {level_instruction} in buildSystemPrompt() rather than folded into
+ * each LEVEL_INSTRUCTIONS entry, mirroring schema_templates.py's
+ * LENGTH_INSTRUCTION exactly.
+ */
+const LENGTH_INSTRUCTION =
+  " Your response length is dictated entirely by what the task actually " +
+  "requires, never by the reasoning_effort level -- write as much as " +
+  "needed to fully and correctly finish it, and do not cut a thought, " +
+  "explanation, or piece of code short because of an assumed length " +
+  "limit. A low-effort task that happens to require a large amount of " +
+  "code should still produce all of it in full; a max-effort task with a " +
+  "small, simple scope should not be padded with unnecessary length. " +
+  "reasoning_effort is about how much you deliberate before and during " +
+  "acting, not about producing a longer or shorter final answer.";
+
 const LEVEL_INSTRUCTIONS: Record<Exclude<EffortLevel, "ultra">, string> = {
   low: "Do NOT include a <think> block. Go straight to the action/answer. Keep it tight.",
 
@@ -101,7 +119,7 @@ export function buildSystemPrompt(mode: Mode, level: EffortLevel): string {
     );
   }
   const template = MODE_TEMPLATES[mode];
-  return template.replace("{level_instruction}", LEVEL_INSTRUCTIONS[level]);
+  return template.replace("{level_instruction}", LEVEL_INSTRUCTIONS[level]) + LENGTH_INSTRUCTION;
 }
 
 export interface EffortConfig {
