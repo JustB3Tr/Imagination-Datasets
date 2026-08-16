@@ -335,12 +335,43 @@ def validate_example(example: dict, level: str, no_tool: bool = False) -> str | 
             n_rejected = len(re.findall(r"^Rejected because:", think_text, flags=re.MULTILINE))
             if n_rejected < 2:
                 return "level is max but <think> block doesn't reject both alternatives"
-        if level == "ultra":
-            required = ["Problem:", "Plan:", "Verification strategy:"]
-            missing = [r for r in required
-                       if not re.search(rf"^{re.escape(r)}", think_text, flags=re.MULTILINE)]
-            if missing:
-                return f"level is ultra but <think> block is missing required label(s): {missing}"
+
+    if level == "ultra":
+        # BUG (found via LLM-judge audit on the first real ultra batch,
+        # ~15% pass rate / avg level_match 1.95): this used to be a
+        # nested "if level == 'ultra':" INSIDE the "if level in (medium,
+        # high, max):" block above -- since "ultra" is never a member of
+        # that tuple, the whole check was dead code and never ran. That
+        # let ultra's <think> block requirement go completely
+        # unenforced, including its placement: unlike medium/high/max
+        # (typically single-turn, so checking the LAST message works),
+        # ultra's system prompt requires the <think> block BEFORE
+        # acting -- i.e. in the FIRST assistant message, before any
+        # tool_calls -- not the last one. The judge's #1 complaint was
+        # examples with the think block only at the end, after all tool
+        # use, which is exactly what an unenforced check would produce.
+        first_assistant = next((m for m in messages if m.get("role") == "assistant"), None)
+        if first_assistant is None:
+            return "level is ultra but no assistant message found"
+        first_content = first_assistant.get("content") or ""
+        if not isinstance(first_content, str) or not first_content.lstrip().startswith("<think>"):
+            return ("level is ultra but the FIRST assistant message doesn't start with a "
+                    "<think> block (it must come before acting, not after)")
+        first_think_match = re.match(r"^<think>(.*?)</think>", first_content.lstrip(), flags=re.DOTALL)
+        if not first_think_match:
+            return "level is ultra but the first assistant message's <think> block is never closed with </think>"
+        first_think_text = first_think_match.group(1)
+        required = ["Problem:", "Plan:", "Verification strategy:"]
+        missing = [r for r in required
+                   if not re.search(rf"^{re.escape(r)}", first_think_text, flags=re.MULTILINE)]
+        if missing:
+            return f"level is ultra but the first <think> block is missing required label(s): {missing}"
+        # NOT applying medium/high/max's "len(after_think) < 10" check here
+        # -- for a tool-using ultra example the first message legitimately
+        # has little/no prose after </think> (the "action" is the
+        # tool_calls on that same message, not prose); for the no-tool
+        # variant this first message IS the whole answer, already covered
+        # by the last-message content-length check earlier in this function.
 
     if level == "ultra" and no_tool:
         # The no-tool ultra variant (deliberate --force-no-tool backfill

@@ -98,10 +98,23 @@ genuinely aren't any -- don't invent nitpicks to fill the list.
 
 
 def format_example_for_judge(ex: dict) -> str:
+    # BUG (found auditing the first real ultra judge run): this used to be
+    # if/else -- a message with BOTH content and tool_calls (ultra's
+    # correct, intended shape: a <think> block alongside the tool_calls
+    # that act on it) only ever showed the tool_calls line, silently
+    # dropping the <think> content entirely. The judge then correctly (from
+    # what it could actually see) flagged nearly every ultra example as
+    # missing its required think block, when it was there all along -- just
+    # never shown. High/max didn't surface this because their think block
+    # lives in the one final message that never carries tool_calls.
     lines = [f"Domain: {ex['meta']['domain']}  Level: {ex['meta']['level']}  Mode: {ex['meta']['mode']}", ""]
     for m in ex["messages"]:
         role = m["role"]
         content = m.get("content") or ""
+        if not isinstance(content, str):
+            content = json.dumps(content)
+        if content:
+            lines.append(f"[{role}] {content[:3000]}")
         if m.get("tool_calls"):
             calls = "; ".join(
                 f"{tc.get('function', {}).get('name', '<missing>')}"
@@ -109,10 +122,6 @@ def format_example_for_judge(ex: dict) -> str:
                 for tc in m["tool_calls"]
             )
             lines.append(f"[{role} -> tool_calls] {calls}")
-        else:
-            if not isinstance(content, str):
-                content = json.dumps(content)
-            lines.append(f"[{role}] {content[:3000]}")
     return "\n".join(lines)
 
 
