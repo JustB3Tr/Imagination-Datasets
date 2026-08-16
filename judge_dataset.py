@@ -34,6 +34,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from schema_templates import LEVELS
+
 ROOT = Path(__file__).parent
 API_KEY = os.environ.get("IMG2_API_KEY")
 API_BASE = os.environ.get("IMG2_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai")
@@ -189,7 +191,7 @@ def main():
     ap.add_argument("--workers", type=int, default=2,
                      help="Keep low for free-tier providers with per-minute quotas.")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--level", choices=["low", "medium", "high", "max", "ultra"], default=None,
+    ap.add_argument("--level", choices=LEVELS, default=None,
                      help="Judge only buckets at this reasoning level.")
     args = ap.parse_args()
 
@@ -240,7 +242,7 @@ def main():
     for r in results:
         by_level[r["_meta"]["level"]].append(r)
     print("\nlevel_match by stated level (the key thing to watch):")
-    for lv in ["low", "medium", "high", "max", "ultra"]:
+    for lv in LEVELS:
         vals = [r["level_match"] for r in by_level.get(lv, []) if "level_match" in r]
         if vals:
             print(f"  {lv:8s}: avg {sum(vals)/len(vals):.2f}  (n={len(vals)})")
