@@ -51,6 +51,11 @@ SEEDS_DIR = ROOT / "seeds"
 # files as real production generations (those get merged via dedup_and_split.py).
 OUT_DIR = Path(os.environ.get("IMG2_OUT_DIR", str(ROOT / "data" / "raw")))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+# 2.2's default output dir is a sibling of whatever OUT_DIR resolves to
+# (respecting an IMG2_OUT_DIR override for test/comparison runs, same as
+# 2.1), not a hardcoded repo path -- IMG2_OUT_DIR_2_2 overrides it directly
+# if the sibling-of-OUT_DIR default isn't what's wanted.
+OUT_DIR_2_2 = Path(os.environ.get("IMG2_OUT_DIR_2_2", str(OUT_DIR.parent / "raw_2_2")))
 
 API_KEY = os.environ.get("IMG2_API_KEY")
 API_BASE = os.environ.get("IMG2_API_BASE", "https://api.deepseek.com")
@@ -618,10 +623,10 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
               version: str = "2.1"):
     seeds = load_seeds(domain)
     mode = mode_for_domain(domain)
-    # 2.2 writes to a sibling directory, never into 2.1's raw files -- keeps
+    # 2.2 writes to a separate directory, never into 2.1's raw files -- keeps
     # dedup_and_split.py's existing 2.1 inputs untouched regardless of what
     # 2.2 generation is doing.
-    out_dir = OUT_DIR if version == "2.1" else ROOT / "data" / "raw_2_2"
+    out_dir = OUT_DIR if version == "2.1" else OUT_DIR_2_2
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{domain}__{level}.jsonl"
 
