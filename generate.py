@@ -33,9 +33,12 @@ from openai import OpenAI
 
 from schema_templates import (
     DOMAINS,
+    DOMAINS_2_2,
+    DOMAIN_HINTS,
     LEVELS,
     MAX_TOKENS_BY_LEVEL,
     ULTRA_DOMAINS,
+    ULTRA_DOMAINS_2_2,
     EXAMPLE_JSON_INSTRUCTIONS,
     RUN_SUBAGENT_TOOL_SCHEMA,
     build_system_prompt,
@@ -102,6 +105,32 @@ _call_lock = threading.Lock()
 _call_state = {"count": 0}
 
 
+# Minimum spacing enforced between the START of any two API calls, shared
+# across every worker thread -- for providers with an undocumented or
+# unusually strict per-minute quota (e.g. OpenRouter's free/stealth models:
+# free-tier variants are documented at a hard 20 req/min platform-wide cap,
+# and a stealth model's real upstream provider limit isn't published at
+# all). A --workers-many ThreadPoolExecutor with no pacing would burst calls
+# far faster than that, since each worker only naturally throttles on its
+# own response latency. Applied inside the retry loop too (each retry is
+# its own call attempt and must space out the same way), not just before
+# the first attempt.
+MIN_CALL_INTERVAL_SECONDS = float(os.environ.get("IMG2_MIN_CALL_INTERVAL", "0") or 0)
+_throttle_lock = threading.Lock()
+_throttle_state = {"last_call_at": 0.0}
+
+
+def _throttle():
+    if MIN_CALL_INTERVAL_SECONDS <= 0:
+        return
+    with _throttle_lock:
+        now = time.monotonic()
+        wait = _throttle_state["last_call_at"] + MIN_CALL_INTERVAL_SECONDS - now
+        if wait > 0:
+            time.sleep(wait)
+        _throttle_state["last_call_at"] = time.monotonic()
+
+
 def _try_claim_call(max_calls: int | None) -> bool:
     """Atomically check-and-increment: returns True if this call is allowed to
     proceed (and counts it), False if the cap is already reached. Doing the
@@ -146,8 +175,9 @@ def load_seeds(domain: str) -> list[str]:
         return json.load(f)
 
 
-def build_prompt(domain: str, level: str, seed_task: str, mode: str, no_tool: bool = False) -> tuple[str, str]:
-    system_prompt = build_system_prompt(mode, level)
+def build_prompt(domain: str, level: str, seed_task: str, mode: str, no_tool: bool = False,
+                  version: str = "2.1") -> tuple[str, str]:
+    system_prompt = build_system_prompt(mode, level, version)
 
     if mode == "orchestrator":
         tool_instructions = (
@@ -205,6 +235,8 @@ it before the final answer. A conversation where every tool call succeeds
 cleanly on the first try, with no detected problem, is NOT a valid example
 of this tier and will be rejected -- don't generate one."""
 
+    domain_hint = DOMAIN_HINTS.get(domain, "")
+
     generator_instructions = f"""
 You are generating ONE synthetic training example for finetuning a coding/
 agentic assistant. The example should teach the DOMAIN "{domain}" at
@@ -217,6 +249,7 @@ The system prompt for this example must be exactly:
 \"\"\"{system_prompt}\"\"\"
 
 {tool_instructions}
+{domain_hint}
 {ultra_structural_note}
 
 {EXAMPLE_JSON_INSTRUCTIONS}
@@ -477,8 +510,9 @@ RETRY_TEMPERATURES = [0.9, 0.7, 0.5]
 
 
 def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
-             max_spend: float, max_calls: int | None, dry_run: bool, no_tool: bool = False) -> dict | str | None:
-    system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode, no_tool=no_tool)
+             max_spend: float, max_calls: int | None, dry_run: bool, no_tool: bool = False,
+             version: str = "2.1") -> dict | str | None:
+    system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode, no_tool=no_tool, version=version)
 
     if dry_run:
         in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
@@ -491,6 +525,7 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             return "CAPPED"  # cap already hit, don't make the call
 
         try:
+            _throttle()
             if max_calls is not None:
                 with _call_lock:
                     call_num = _call_state["count"]
@@ -579,10 +614,16 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
 
 
 def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: int,
-              max_spend: float, max_calls: int | None, dry_run: bool, force_no_tool: bool = False):
+              max_spend: float, max_calls: int | None, dry_run: bool, force_no_tool: bool = False,
+              version: str = "2.1"):
     seeds = load_seeds(domain)
     mode = mode_for_domain(domain)
-    out_path = OUT_DIR / f"{domain}__{level}.jsonl"
+    # 2.2 writes to a sibling directory, never into 2.1's raw files -- keeps
+    # dedup_and_split.py's existing 2.1 inputs untouched regardless of what
+    # 2.2 generation is doing.
+    out_dir = OUT_DIR if version == "2.1" else ROOT / "data" / "raw_2_2"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{domain}__{level}.jsonl"
 
     def roll_no_tool(job_mode: str) -> bool:
         if job_mode == "orchestrator":
@@ -614,7 +655,7 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(call_api, client, d, lv, s, m, max_spend, max_calls, dry_run, nt): (d, lv, s, m)
+                pool.submit(call_api, client, d, lv, s, m, max_spend, max_calls, dry_run, nt, version): (d, lv, s, m)
                 for (d, lv, s, m, nt) in jobs
             }
             for fut in as_completed(futures):
@@ -649,11 +690,23 @@ def run_combo(client: OpenAI, domain: str, level: str, variants: int, workers: i
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--domain", choices=DOMAINS)
+    ap.add_argument("--domain", choices=DOMAINS_2_2)
     ap.add_argument("--level", choices=LEVELS)
+    ap.add_argument("--version", choices=["2.1", "2.2"], default="2.1",
+                     help="which dataset/product-name contract to generate under. 2.1 is "
+                          "the original 3-domain dataset (unchanged, default). 2.2 adds "
+                          "multi_file_project/long_context_reasoning/conversational_followup "
+                          "and writes to data/raw_2_2/ instead of data/raw/, so it never "
+                          "touches 2.1's already-generated data.")
     ap.add_argument("--all", action="store_true", help="run every domain x level combo")
     ap.add_argument("--variants", type=int, default=3, help="generations per seed task")
     ap.add_argument("--workers", type=int, default=6, help="concurrent API calls")
+    ap.add_argument("--min-interval", type=float, default=None,
+                     help="minimum seconds between the start of any two API calls, shared "
+                          "across all workers -- use this to stay under a provider's "
+                          "requests-per-minute cap (e.g. OpenRouter free models: 20 req/min "
+                          "platform-wide). Overrides IMG2_MIN_CALL_INTERVAL if both are set. "
+                          "0/unset = no throttling (the old, unthrottled default behavior).")
     ap.add_argument("--max-spend", type=float, default=2.0,
                      help="hard stop, in USD, using the real per-call cost from the "
                           "API's usage stats. The script checks this before every call, "
@@ -682,28 +735,42 @@ def main():
         print("Set IMG2_API_KEY first (or use --dry-run, which needs no key).", file=sys.stderr)
         sys.exit(1)
 
+    if args.min_interval is not None:
+        global MIN_CALL_INTERVAL_SECONDS
+        MIN_CALL_INTERVAL_SECONDS = args.min_interval
+
     client = OpenAI(api_key=API_KEY or "dry-run", base_url=API_BASE)
 
-    if args.level == "ultra" and args.domain and args.domain not in ULTRA_DOMAINS:
-        print(f"'ultra' is only generated for {ULTRA_DOMAINS} (see PLAN.md) -- "
-              f"'{args.domain}' isn't one of them.", file=sys.stderr)
+    run_domains = DOMAINS if args.version == "2.1" else DOMAINS_2_2
+    run_ultra_domains = ULTRA_DOMAINS if args.version == "2.1" else ULTRA_DOMAINS_2_2
+
+    if args.domain and args.domain not in run_domains:
+        print(f"'{args.domain}' isn't a version {args.version} domain ({run_domains}). "
+              f"Pass --version 2.2 if you meant a 2.2-only domain.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.level == "ultra" and args.domain and args.domain not in run_ultra_domains:
+        print(f"'ultra' is only generated for {run_ultra_domains} in version {args.version} "
+              f"(see PLAN.md) -- '{args.domain}' isn't one of them.", file=sys.stderr)
         sys.exit(1)
 
     total = 0
     t0 = time.time()
     if args.all:
-        for domain in DOMAINS:
+        for domain in run_domains:
             for level in LEVELS:
-                if level == "ultra" and domain not in ULTRA_DOMAINS:
+                if level == "ultra" and domain not in run_ultra_domains:
                     continue
                 total += run_combo(client, domain, level, args.variants, args.workers,
-                                    args.max_spend, args.max_calls, args.dry_run, args.force_no_tool)
+                                    args.max_spend, args.max_calls, args.dry_run, args.force_no_tool,
+                                    args.version)
     else:
         if not (args.domain and args.level):
             print("Pass --domain and --level, or --all.", file=sys.stderr)
             sys.exit(1)
         total += run_combo(client, args.domain, args.level, args.variants, args.workers,
-                            args.max_spend, args.max_calls, args.dry_run, args.force_no_tool)
+                            args.max_spend, args.max_calls, args.dry_run, args.force_no_tool,
+                            args.version)
 
     with _spend_lock:
         final_spend = _spend_state["usd"]
