@@ -74,6 +74,39 @@ REASONING_EFFORT = os.environ.get("IMG2_REASONING_EFFORT")
 # instead of letting OpenRouter auto-select. No-op for non-OpenRouter bases.
 OPENROUTER_PROVIDER = os.environ.get("IMG2_OPENROUTER_PROVIDER")
 
+# Confirmed by direct calibration testing (see PR discussion): OpenRouter's
+# stealth/ox-alpha (and presumably other genuine hybrid-reasoning models
+# served the same way) treats a literal "<think>...</think>" span ANYWHERE
+# in its output as a real chat-template control sequence, not text -- the
+# serving layer silently strips that whole span out of `content` and
+# reroutes it into the separate `reasoning` API field instead, regardless
+# of whether it's the model's own reasoning or text we explicitly asked it
+# to reproduce verbatim (e.g. our system prompt's own "<think>...</think>
+# block" phrasing, or an assistant turn's actual think block). Every
+# medium/high/max/ultra example needs a literal, visible <think> block in
+# its saved content -- that's the entire training signal -- so this isn't
+# a cosmetic bug, it silently corrupts every such example from this
+# provider. Set IMG2_THINK_PLACEHOLDER=1 to work around it: the generator
+# is told to write [THINK]/[/THINK] instead of the real tags anywhere one
+# would appear (both in the reproduced system prompt text and the
+# assistant's own think blocks), and the raw response is substituted back
+# to literal <think>/</think> before JSON parsing -- so the actual saved
+# examples end up byte-identical to what an unaffected provider would
+# produce. Opt-in and off by default: providers without this quirk (the
+# existing DeepSeek/OpenRouter-DeepSeek pipeline) don't need it and
+# shouldn't have their raw output silently rewritten.
+THINK_PLACEHOLDER = os.environ.get("IMG2_THINK_PLACEHOLDER") == "1"
+_THINK_OPEN_PLACEHOLDER = "[THINK]"
+_THINK_CLOSE_PLACEHOLDER = "[/THINK]"
+
+
+def _to_think_placeholder(text: str) -> str:
+    return text.replace("<think>", _THINK_OPEN_PLACEHOLDER).replace("</think>", _THINK_CLOSE_PLACEHOLDER)
+
+
+def _from_think_placeholder(text: str) -> str:
+    return text.replace(_THINK_OPEN_PLACEHOLDER, "<think>").replace(_THINK_CLOSE_PLACEHOLDER, "</think>")
+
 # $ per 1M tokens. Defaults are direct DeepSeek V4 Flash rates as of Aug 2026.
 # If you're on OpenRouter, override these (their DeepSeek route runs a bit
 # higher, roughly $0.21/$0.31 per 1M as of this writing, check your dashboard).
@@ -518,6 +551,16 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
              max_spend: float, max_calls: int | None, dry_run: bool, no_tool: bool = False,
              version: str = "2.1") -> dict | str | None:
     system_prompt, user_prompt = build_prompt(domain, level, seed_task, mode, no_tool=no_tool, version=version)
+    if THINK_PLACEHOLDER:
+        user_prompt = _to_think_placeholder(user_prompt) + (
+            "\n\nIMPORTANT: your serving environment intercepts the literal tags "
+            f"<think> and </think> anywhere they appear in your output. Write "
+            f"{_THINK_OPEN_PLACEHOLDER} and {_THINK_CLOSE_PLACEHOLDER} instead, "
+            "everywhere a <think> or </think> tag would otherwise appear -- "
+            "including inside the system prompt text you're reproducing "
+            "verbatim, and in your own think block. They will be converted "
+            "back automatically afterward."
+        )
 
     if dry_run:
         in_tok, out_tok = estimate_call_tokens(level, mode, user_prompt)
@@ -571,6 +614,8 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             print(f"  [${total:6.3f} total] {domain}/{level}/{mode}", file=sys.stderr)
 
             raw = resp.choices[0].message.content.strip()
+            if THINK_PLACEHOLDER:
+                raw = _from_think_placeholder(raw)
             # Some providers (e.g. Gemma via the Gemini API) inline their chain-of-
             # thought directly in the visible content as a leading <thought>...
             # </thought> block instead of hiding it -- strip it before parsing.
