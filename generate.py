@@ -657,6 +657,18 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             return example
         except Exception as e:
             last_err = e
+            # A 429 here is the upstream provider's own shared-pool limit
+            # (seen on stealth/ox-alpha: "temporarily rate-limited upstream,
+            # retry shortly"), not this key's own quota -- immediately
+            # retrying at the next temperature just hammers an already-
+            # limited pool and burns through --max-calls on failures instead
+            # of generations. Back off first, same pattern as judge_dataset.
+            # py's rate-limit handling.
+            if attempt < len(RETRY_TEMPERATURES) and ("429" in str(e) or "rate" in str(e).lower()):
+                delay = 15 * attempt
+                print(f"  [rate limited, backing off {delay}s before retry {attempt}/"
+                      f"{len(RETRY_TEMPERATURES) - 1}] {domain}/{level}/{mode}", file=sys.stderr)
+                time.sleep(delay)
             continue
 
     print(f"  [skip] {domain}/{level}/{mode}: {last_err}", file=sys.stderr)
