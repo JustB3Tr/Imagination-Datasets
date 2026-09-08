@@ -1,0 +1,22 @@
+[
+  "User asks for a user-auth backend using MongoDB; partway through, redirects to use Postgres instead.",
+  "User asks for a synchronous data-processing script; after the assistant starts, the user says it actually needs to be async because the real data source is a slow API.",
+  "User asks to build a REST API; after the assistant scaffolds it, the user says they actually want GraphQL instead.",
+  "User asks for a Python script; after the assistant writes it, the user says the target environment is actually Python 3.8, not 3.12, and some syntax won't work.",
+  "User asks to add caching with Redis; after the assistant wires it up, the user says Redis isn't available in their environment and to use an in-memory cache instead.",
+  "User asks for a React component using class components; after the assistant starts, the user says their codebase is all hooks-based function components now.",
+  "User asks the assistant to fix a bug by adding a try/except; after seeing the fix, the user says swallowing the error isn't acceptable and asks for a proper root-cause fix instead.",
+  "User asks for a Dockerfile targeting Alpine; after the assistant writes it, the user says a required native dependency doesn't build on Alpine and to switch the base image.",
+  "User asks for unit tests using pytest; midway, the user says the team actually standardized on unittest and to convert.",
+  "User asks for a function that reads a whole file into memory; after seeing the approach, the user says the files are multi-GB and it needs to stream instead.",
+  "User asks to deploy via a single large EC2 instance; after the assistant plans it out, the user says budget constraints mean it has to be serverless (Lambda) instead.",
+  "User asks for an endpoint with no auth for a quick prototype; after the assistant builds it, the user says it's going to production next week and needs real auth now.",
+  "User asks the assistant to add a feature directly to main; after starting, the user says actually they need it behind a feature flag for gradual rollout.",
+  "User asks for a solution using a specific npm package; after the assistant starts integrating it, the user says legal flagged that package's license and it needs to be swapped for an alternative.",
+  "User asks for a batch nightly job; after the assistant designs it, the user says the business now needs near-real-time updates instead of a nightly batch.",
+  "User asks the assistant to store data as flat JSON files; after seeing the plan, the user says query performance needs to scale and it should use a real database instead.",
+  "User asks for a fix that hardcodes a timezone; after seeing the code, the user says the app needs to support multiple user timezones properly.",
+  "User asks the assistant to add a new column to an existing table directly; after seeing the migration, the user says the table is huge and it needs a zero-downtime migration strategy instead.",
+  "User asks for a webhook handler that processes requests synchronously; after the assistant implements it, the user says the upstream provider times out after 3s and it needs to ack immediately and process async.",
+  "User asks the assistant to write a script that mutates data in place; after seeing it, the user says they need a dry-run mode first before ever mutating real data."
+]
