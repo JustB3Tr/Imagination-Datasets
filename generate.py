@@ -96,8 +96,16 @@ OPENROUTER_PROVIDER = os.environ.get("IMG2_OPENROUTER_PROVIDER")
 # existing DeepSeek/OpenRouter-DeepSeek pipeline) don't need it and
 # shouldn't have their raw output silently rewritten.
 THINK_PLACEHOLDER = os.environ.get("IMG2_THINK_PLACEHOLDER") == "1"
-_THINK_OPEN_PLACEHOLDER = "[THINK]"
-_THINK_CLOSE_PLACEHOLDER = "[/THINK]"
+# Collision-resistant internal markers, not plain "[THINK]"/"[/THINK]" --
+# per PR review (JustB3Tr): generic bracket sentinels can theoretically
+# collide with legitimate dataset content a generated example might
+# actually contain (code, logs, markdown, pasted config/diff text --
+# especially now that long_context_reasoning's whole point is large pasted
+# artifacts). The suffix is fixed, not random, so re-running the pipeline
+# stays deterministic/reproducible; it's long and specific enough that a
+# real generated example accidentally containing it is not a realistic risk.
+_THINK_OPEN_PLACEHOLDER = "__IMG2_INTERNAL_THINK_OPEN_7F31A9__"
+_THINK_CLOSE_PLACEHOLDER = "__IMG2_INTERNAL_THINK_CLOSE_7F31A9__"
 
 
 def _to_think_placeholder(text: str) -> str:
