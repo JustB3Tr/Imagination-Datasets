@@ -672,9 +672,24 @@ def call_api(client: OpenAI, domain: str, level: str, seed_task: str, mode: str,
             # limited pool and burns through --max-calls on failures instead
             # of generations. Back off first, same pattern as judge_dataset.
             # py's rate-limit handling.
-            if attempt < len(RETRY_TEMPERATURES) and ("429" in str(e) or "rate" in str(e).lower()):
-                delay = 15 * attempt
-                print(f"  [rate limited, backing off {delay}s before retry {attempt}/"
+            #
+            # A 402 "in_flight_budget_exhausted" (seen on z-ai/glm-5.3-flash
+            # once ox-alpha's free preview ended and real credits/concurrency
+            # limits applied) is a DIFFERENT failure mode needing a much
+            # longer wait: OpenRouter reserves worst-case cost per in-flight
+            # request against the account's balance, so several concurrent
+            # --workers can each get rejected even though actual spend is
+            # tiny -- the response's own Retry-After header said 120s, far
+            # longer than the 429 backoff above, and immediately retrying at
+            # the next temperature (the old behavior) just re-hits the same
+            # wall every time since none of the OTHER in-flight requests
+            # have had a chance to settle yet.
+            is_rate_limit = "429" in str(e) or "rate" in str(e).lower()
+            is_budget_exhausted = "402" in str(e) or "in_flight_budget_exhausted" in str(e)
+            if attempt < len(RETRY_TEMPERATURES) and (is_rate_limit or is_budget_exhausted):
+                delay = 130 if is_budget_exhausted else 15 * attempt
+                reason = "in-flight budget exhausted" if is_budget_exhausted else "rate limited"
+                print(f"  [{reason}, backing off {delay}s before retry {attempt}/"
                       f"{len(RETRY_TEMPERATURES) - 1}] {domain}/{level}/{mode}", file=sys.stderr)
                 time.sleep(delay)
             continue
