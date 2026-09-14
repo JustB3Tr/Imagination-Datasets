@@ -16,6 +16,60 @@ DOMAINS = ["agentic_tool_use", "subagent_orchestration", "general_code"]
 # that it doesn't need its own ultra treatment (see PLAN.md "Open decisions").
 ULTRA_DOMAINS = ["agentic_tool_use", "general_code"]
 
+# --- 2.2 additions --------------------------------------------------------
+# New domains for the Imagination 2.2 Pro dataset, generated in addition to
+# (not replacing) the 2.1 domains above -- 2.2's data lives in a separate
+# output dir (see generate.py's --version flag) and uses the "2.2" product
+# name in its system prompts, so it never mixes with or mutates 2.1's
+# already-generated/trained data.
+NEW_DOMAINS_2_2 = ["multi_file_project", "long_context_reasoning", "conversational_followup"]
+DOMAINS_2_2 = DOMAINS + NEW_DOMAINS_2_2
+
+# multi_file_project and conversational_followup both have a natural
+# verify-then-correct shape (a change across files revealing a problem in
+# another file; a user correction the assistant must actually reconcile
+# with work already done) so they get ultra like agentic_tool_use/
+# general_code did. long_context_reasoning is fundamentally a comprehension/
+# retrieval skill, not an iterate-until-fixed one -- deliberately left out,
+# same reasoning that excluded subagent_orchestration originally.
+ULTRA_DOMAINS_2_2 = ULTRA_DOMAINS + ["multi_file_project", "conversational_followup"]
+
+# Extra generator guidance injected into build_prompt()'s instructions for
+# domains whose correct SHAPE isn't obvious from the domain name + a single
+# seed sentence alone (unlike e.g. agentic_tool_use, which is self-explanatory).
+DOMAIN_HINTS = {
+    "multi_file_project": (
+        "This task must involve creating/editing/coordinating changes across "
+        "MULTIPLE files (at least 2-3 distinct, realistically-named files/paths "
+        "in one small project or repo), not a single-file edit. Use tool calls "
+        "(e.g. write_file/read_file/list_files/shell) to actually touch each "
+        "file. The final answer should summarize what changed across the "
+        "whole set of files, not just the last one touched."
+    ),
+    "long_context_reasoning": (
+        "The user's message must include a large, realistic pasted artifact "
+        "(a long log dump, a big config file, or a large diff -- at least "
+        "1500-3000 words of genuine, non-repetitive realistic content) that "
+        "the assistant must search/reason over to answer. Include the FULL "
+        "bulk of this artifact in the user message content -- do not "
+        "summarize or shrink it down to save space."
+    ),
+    "conversational_followup": (
+        "This example must have MULTIPLE user turns, not one: the user gives "
+        "an initial task, the assistant starts working (with tool calls if "
+        "appropriate), then the user sends a SECOND message that corrects or "
+        "redirects the approach (e.g. \"actually use Postgres, not Mongo\", "
+        "\"wait, make it async instead\") that genuinely conflicts with work "
+        "already started -- not just an additive request. The assistant must "
+        "visibly adapt to the new requirement in its remaining work (not "
+        "silently ignore the correction, and not throw away and restart from "
+        "scratch when partial reuse is possible). Message order: system, "
+        "user, assistant (+tool turns), user (the correction), assistant "
+        "(+tool turns), ending in one final assistant answer reflecting the "
+        "corrected requirement."
+    ),
+}
+
 # This is a SAFETY CEILING to prevent truncation, not a per-level target
 # length. Billing is metered on actual tokens generated, not this number --
 # raising it costs nothing unless a call genuinely needs it. What
@@ -142,26 +196,38 @@ LEVEL_INSTRUCTIONS = {
 
 # --- System prompt templates -------------------------------------------
 
-DIRECT_MODE_SYSTEM = (
-    "You are Imagination 2.1 Pro operating in DIRECT mode. You may call tools "
-    "when needed to complete the user's task. {level_instruction}"
-)
+# {product_name} lets the same templates serve multiple dataset versions
+# (2.1's already-trained checkpoint vs 2.2's in-progress one) without ever
+# risking a silent edit to the byte-for-byte 2.1 contract that's mirrored in
+# imagination-agent-sandbox/orchestrator/prompt.py and imagination-ui's
+# prompt.ts. build_system_prompt()'s default version="2.1" reproduces the
+# exact strings this file always emitted, so every existing call site
+# (generate_identity*.py, judge_dataset.py via generate.py) is unaffected.
+PRODUCT_NAME_BY_VERSION = {
+    "2.1": "Imagination 2.1 Pro",
+    "2.2": "Imagination 2.2 Pro",
+}
 
-ORCHESTRATOR_MODE_SYSTEM = (
-    "You are Imagination 2.1 Pro operating in ORCHESTRATOR mode. You do not "
-    "do the work yourself. Break the task into a sequence of well-scoped "
-    "subtasks and hand each one to a subagent via the run_subagent tool, "
-    "ONE AT A TIME. Wait for each subagent's result before deciding the "
-    "next step or calling it done. When all subtasks are complete, "
-    "synthesize a final answer from the results. {level_instruction}"
-)
-
-SUBAGENT_MODE_SYSTEM = (
-    "You are Imagination 2.1 Pro operating in SUBAGENT mode. You have been "
-    "handed a single, self-contained subtask by an orchestrator. You have "
-    "NO memory of any larger conversation or plan. Complete this subtask "
-    "and return a clear, structured result. {level_instruction}"
-)
+_MODE_TEMPLATES = {
+    "direct": (
+        "You are {product_name} operating in DIRECT mode. You may call tools "
+        "when needed to complete the user's task. {level_instruction}"
+    ),
+    "orchestrator": (
+        "You are {product_name} operating in ORCHESTRATOR mode. You do not "
+        "do the work yourself. Break the task into a sequence of well-scoped "
+        "subtasks and hand each one to a subagent via the run_subagent tool, "
+        "ONE AT A TIME. Wait for each subagent's result before deciding the "
+        "next step or calling it done. When all subtasks are complete, "
+        "synthesize a final answer from the results. {level_instruction}"
+    ),
+    "subagent": (
+        "You are {product_name} operating in SUBAGENT mode. You have been "
+        "handed a single, self-contained subtask by an orchestrator. You have "
+        "NO memory of any larger conversation or plan. Complete this subtask "
+        "and return a clear, structured result. {level_instruction}"
+    ),
+}
 
 # Shared across every mode and level -- the reasoning_effort level controls
 # how much you deliberate, not how long your output is. Appended after
@@ -260,16 +326,16 @@ Rules:
 """.strip()
 
 
-def build_system_prompt(mode: str, level: str) -> str:
-    assert mode in ("direct", "orchestrator", "subagent")
+def build_system_prompt(mode: str, level: str, version: str = "2.1") -> str:
+    assert mode in _MODE_TEMPLATES
     assert level in LEVELS
+    assert version in PRODUCT_NAME_BY_VERSION, f"unknown dataset version: {version!r}"
     level_instruction = LEVEL_INSTRUCTIONS[level]
-    template = {
-        "direct": DIRECT_MODE_SYSTEM,
-        "orchestrator": ORCHESTRATOR_MODE_SYSTEM,
-        "subagent": SUBAGENT_MODE_SYSTEM,
-    }[mode]
-    return template.format(level_instruction=level_instruction) + LENGTH_INSTRUCTION
+    template = _MODE_TEMPLATES[mode]
+    return template.format(
+        product_name=PRODUCT_NAME_BY_VERSION[version],
+        level_instruction=level_instruction,
+    ) + LENGTH_INSTRUCTION
 
 
 def mode_for_domain(domain: str) -> str:
@@ -284,4 +350,10 @@ def mode_for_domain(domain: str) -> str:
         "agentic_tool_use": "direct",
         "subagent_orchestration": "orchestrator",
         "general_code": "direct",
+        # 2.2 additions -- all single-agent DIRECT mode, no orchestrator/
+        # subagent variant of their own (they still get SUBAGENT_VARIANT_RATE
+        # reuse like agentic_tool_use/general_code, see generate.py).
+        "multi_file_project": "direct",
+        "long_context_reasoning": "direct",
+        "conversational_followup": "direct",
     }[domain]

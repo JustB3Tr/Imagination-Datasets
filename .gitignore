@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 data/raw/
+data/raw_2_2/
 data/test_free_compare/
 data/test_paid_compare/
 data/dedup_report.json

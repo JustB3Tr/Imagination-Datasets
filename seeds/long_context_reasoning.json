@@ -1,0 +1,22 @@
+[
+  "Given a large pasted application log spanning a service restart, find the actual root-cause error buried among thousands of unrelated INFO lines.",
+  "Given a big pasted nginx access log, identify the specific pattern of requests behind a traffic spike and whether it looks like a bot or a real user surge.",
+  "Given a long pasted CI pipeline log with many passing steps, find the exact step and line that caused the build to fail.",
+  "Given a large pasted Terraform plan output, find every resource that would be destroyed and explain why, distinguishing intentional from accidental changes.",
+  "Given a long pasted git diff across many files, summarize what functionally changed and flag any file where the change looks unrelated to the rest.",
+  "Given a huge pasted JSON config dump from a monitoring system, find the one misconfigured alert rule causing duplicate pages.",
+  "Given a long pasted database slow-query log, identify the query pattern responsible for most of the cumulative time, not just the single slowest entry.",
+  "Given a large pasted dependency tree/lockfile, find the specific transitive dependency responsible for a version conflict.",
+  "Given a long pasted stack trace with many nested library frames, identify the actual application-code frame that caused the exception.",
+  "Given a big pasted Kubernetes pod events log, determine the real reason a deployment rollout is stuck.",
+  "Given a large pasted server metrics dump (CPU/memory/disk over many timestamps), find the point where a memory leak pattern begins.",
+  "Given a long pasted changelog spanning many versions, determine exactly which version introduced a specific breaking change the user is hitting.",
+  "Given a large pasted set of firewall/security-group rules, find the rule conflict that's silently blocking a needed connection.",
+  "Given a long pasted email thread of back-and-forth requirements discussion, extract the final, actually-agreed-upon spec.",
+  "Given a big pasted test suite output with hundreds of passing tests and a handful of failures, group the failures by likely shared root cause.",
+  "Given a large pasted OpenAPI spec, find every endpoint missing a required error-response definition.",
+  "Given a long pasted audit log of admin actions, reconstruct the exact sequence of changes that led to a misconfigured production setting.",
+  "Given a big pasted docker-compose file with many services, trace the actual dependency chain causing one service to fail on startup.",
+  "Given a large pasted webpack/bundler build log, find the specific module responsible for an unexpectedly large bundle size increase.",
+  "Given a long pasted SQL schema dump with many tables, find every foreign key that's missing a corresponding index."
+]
