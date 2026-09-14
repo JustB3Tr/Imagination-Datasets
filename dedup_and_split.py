@@ -175,11 +175,22 @@ def main():
     ap.add_argument("--eval-per-bucket", type=int, default=30,
                      help="how many examples per domain/level bucket to hold out for eval")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--raw-dir", default=None,
+                     help="override data/raw/ (e.g. data/raw_2_2 for the 2.2 dataset). "
+                          "Default preserves exact original 2.1 behavior.")
+    ap.add_argument("--suffix", default="",
+                     help="appended to output filenames, e.g. '_2_2' -> train_2_2.jsonl/"
+                          "eval_2_2.jsonl/dedup_report_2_2.json, so a 2.2 run never "
+                          "overwrites 2.1's train.jsonl/eval.jsonl.")
     args = ap.parse_args()
+
+    global RAW_DIR
+    if args.raw_dir:
+        RAW_DIR = Path(args.raw_dir)
 
     examples = load_all_raw()
     if not examples:
-        print("No raw examples found in data/raw/. Run generate.py first.")
+        print(f"No raw examples found in {RAW_DIR}/. Run generate.py first.")
         return
     print(f"Loaded {len(examples)} raw examples.")
 
@@ -231,10 +242,10 @@ def main():
             (eval_ if i in eval_idx else train).append(ex)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(OUT_DIR / "train.jsonl", "w") as f:
+    with open(OUT_DIR / f"train{args.suffix}.jsonl", "w") as f:
         for ex in train:
             f.write(json.dumps(ex) + "\n")
-    with open(OUT_DIR / "eval.jsonl", "w") as f:
+    with open(OUT_DIR / f"eval{args.suffix}.jsonl", "w") as f:
         for ex in eval_:
             f.write(json.dumps(ex) + "\n")
 
@@ -247,7 +258,7 @@ def main():
         "eval_count": len(eval_),
         "bucket_counts": counts,
     }
-    with open(OUT_DIR / "dedup_report.json", "w") as f:
+    with open(OUT_DIR / f"dedup_report{args.suffix}.json", "w") as f:
         json.dump(report, f, indent=2)
 
     print(f"\nWrote {len(train)} train / {len(eval_)} eval examples.")

@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
 data/raw/
-data/raw_2_2/
+# data/raw_2_2/ is intentionally NOT ignored (unlike data/raw/ above):
+# the OpenRouter account funding 2.2 generation is currently exhausted
+# ($25 total credits, $24.996 spent, see STATUS.md), so this raw data
+# isn't cheaply regenerable right now the way 2.1's raw/ is. Committed
+# as a handoff/safety-net artifact until generation resumes.
 data/test_free_compare/
 data/test_paid_compare/
 data/dedup_report.json
